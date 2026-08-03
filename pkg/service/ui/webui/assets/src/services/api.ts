@@ -1,0 +1,44 @@
+// API service — all backend HTTP calls
+
+export async function sendInput(text: string, target: string, inputMode: string): Promise<void> {
+  await fetch('/api/input', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, target, input_mode: inputMode }),
+  })
+}
+
+export async function abortWorker(target: string): Promise<void> {
+  await fetch('/api/abort', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target }),
+  })
+}
+
+export async function makeDecision(reqID: string, decision: string, reasoning = ''): Promise<void> {
+  await fetch(`/api/decisions/${reqID}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision, reasoning }),
+  })
+}
+
+export async function fetchWorkers(): Promise<{ id: string; type: string }[]> {
+  const res = await fetch('/api/workers')
+  return res.json()
+}
+
+export async function fetchDecisions(): Promise<any[]> {
+  const res = await fetch('/api/decisions')
+  return res.json()
+}
+
+export async function loadEventsBefore(anchorId: string, limit = 50, worker = '', trace = ''): Promise<any[]> {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (worker) params.set('worker', worker)
+  if (trace) params.set('trace', trace)
+  const res = await fetch(`/api/events/before/${anchorId}?${params}`)
+  return res.json()
+}
