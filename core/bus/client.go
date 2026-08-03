@@ -9,6 +9,9 @@ import (
 // EventBusClient is a worker's handle to the bus.
 // Subscribe and Receive together deliver events matching registered patterns.
 // Publish sends events under this worker's identity
+//
+// Deprecated: Replaced by WorkerSideChannel (channel.go).
+// EventBusClient will be removed after migration.
 type EventBusClient interface {
 	// Subscribe registers interest in one or more event patterns.
 	Subscribe(patterns []event.EventPattern) error
