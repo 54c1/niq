@@ -1,19 +1,20 @@
 package swarm
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 
+	corebus "github.com/54c1/niq/core/bus"
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
 	programpkg "github.com/54c1/niq/core/program"
-	"github.com/54c1/niq/core/store"
 	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/pkg/helper/openai"
-	svcbus "github.com/54c1/niq/pkg/service/bus"
-	inprocesspkg "github.com/54c1/niq/pkg/service/bus/transport/inprocess"
+	"github.com/54c1/niq/pkg/service/eventbus"
+	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/pgbackend"
 	"github.com/54c1/niq/pkg/service/ui/webui"
 	"github.com/54c1/niq/pkg/service/workerhost"
@@ -28,16 +29,16 @@ import (
 
 // BuildContext holds shared dependencies that worker factories need.
 type BuildContext struct {
-	Bus          *svcbus.Bus // shared bus for control-plane operations
-	Engine       *workerhost.WorkerService
-	Store        store.EventStore
-	WebUIAddr    string // non-empty enables WebUI server in HIW
-	ProgramsRoot string // root directory for program storage
+	Registry     corebus.IdentityRegistry
+	Listener     *inprocess.InProcListener
+	Engine       *eventbus.Engine
+	WorkerSvc    *workerhost.WorkerService
+	WebUIAddr    string
+	ProgramsRoot string
 }
 
-// clientFor builds an InProcessClient for a worker, falling back to ["*"]
-// when the worker config does not specify publish / subscription lists.
-func clientFor(ctx BuildContext, cfg WorkerConfig) (*inprocesspkg.InProcessClient, error) {
+// clientFor registers an identity and creates a WorkerSideChannel for a worker.
+func clientFor(ctx BuildContext, cfg WorkerConfig) (corebus.WorkerSideChannel, error) {
 	subAllow := cfg.Subscriptions
 	if len(subAllow) == 0 {
 		subAllow = []string{"*"}
@@ -46,15 +47,22 @@ func clientFor(ctx BuildContext, cfg WorkerConfig) (*inprocesspkg.InProcessClien
 	if len(pubAllow) == 0 {
 		pubAllow = []string{"*"}
 	}
-	if err := ctx.Bus.RegisterWorker(cfg.ID, pubAllow, subAllow); err != nil {
+
+	if err := ctx.Registry.Register(corebus.Identity{
+		WorkerID:       cfg.ID,
+		PublishAllow:   pubAllow,
+		SubscribeAllow: subAllow,
+	}); err != nil {
 		return nil, fmt.Errorf("swarm: register worker %q: %w", cfg.ID, err)
 	}
-	client, err := inprocesspkg.NewClient(ctx.Bus, cfg.ID)
-	if err != nil {
-		return nil, fmt.Errorf("swarm: client for %q: %w", cfg.ID, err)
+
+	ch := inprocess.NewWorkerSide(cfg.ID, ctx.Listener)
+	if err := ch.Connect(context.Background(), "inproc://niq"); err != nil {
+		return nil, fmt.Errorf("swarm: connect worker %q: %w", cfg.ID, err)
 	}
+
 	log.Printf("[swarm] registered worker %s (pub=%v sub=%v)", cfg.ID, pubAllow, subAllow)
-	return client, nil
+	return ch, nil
 }
 
 // BuildWorker instantiates a single worker.ManagedWorker from a config entry.
@@ -163,10 +171,11 @@ func buildHost(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error)
 	}
 
 	return host.New(host.Config{
-		ID:     cfg.ID,
-		Bus:    client,
-		Engine: ctx.Engine,
-		Shared: ctx.Bus,
+		ID:       cfg.ID,
+		Bus:      client,
+		Registry: ctx.Registry,
+		Listener: ctx.Listener,
+		Engine:   ctx.WorkerSvc,
 	}), nil
 }
 
@@ -193,9 +202,8 @@ func buildHIW(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) 
 	}
 
 	h := hiw.New(hiw.Config{
-		ID:    cfg.ID,
-		Bus:   client,
-		Store: ctx.Store,
+		ID:  cfg.ID,
+		Bus: client,
 	})
 
 	if ctx.WebUIAddr != "" {
