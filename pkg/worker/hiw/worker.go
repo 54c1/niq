@@ -41,7 +41,7 @@ type Worker struct {
 // Config holds the configuration for a HIW.
 type Config struct {
 	ID    string // worker ID, defaults to "hiw"
-	Bus   corebus.EventBusClient
+	Bus   corebus.WorkerSideChannel
 	Store store.EventStore
 }
 
@@ -51,7 +51,7 @@ func New(cfg Config) *Worker {
 		id = "hiw"
 	}
 	return &Worker{
-		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
+		BaseWorker: worker.NewBaseWorkerV2(id, []event.EventPattern{
 			event.NewPattern("*"),
 		}, cfg.Bus),
 		store:            cfg.Store,
@@ -69,12 +69,11 @@ func (w *Worker) Start(ctx context.Context) error {
 		return fmt.Errorf("hiw: already started")
 	}
 
-	w.Bus.Subscribe(w.Subscriptions())
-	busCh, _ := w.Bus.Receive(context.Background())
+	busCh, _ := w.Channel.Receive(context.Background())
 
 	// Announce tools so the reason worker can discover request_human_decision.
 	w.publishReady()
-	_ = w.Bus.Publish(event.New("worker.discover", w.ID(), nil))
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), nil))
 
 	ch := w.cancelCh
 	go func() {
@@ -145,7 +144,7 @@ func (w *Worker) broadcastToFollowers(evt event.Event) {
 
 // publishReady announces HIW's available tool for human decision requests.
 func (w *Worker) publishReady() {
-	_ = w.Bus.Publish(event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "hiw",
 		"tools": []map[string]any{{

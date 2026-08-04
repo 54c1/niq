@@ -227,8 +227,7 @@ func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
 		"name":    toolName,
 		"result":  result,
 	})
-	evt.TargetWorkerID = callerID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
@@ -237,6 +236,5 @@ func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
 		"name":    toolName,
 		"error":   errMsg,
 	})
-	evt.TargetWorkerID = callerID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }

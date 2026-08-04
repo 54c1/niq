@@ -1,6 +1,7 @@
 package hiw
 
 import (
+	"context"
 	"log"
 	"strings"
 
@@ -91,8 +92,7 @@ func (w *Worker) handleToolCall(evt event.Event) {
 		"worker_id": callerID,
 		"result":    "decision request submitted, waiting for human response",
 	})
-	evtResp.TargetWorkerID = callerID
-	_ = w.Bus.Publish(evtResp)
+	_ = w.Channel.Send(context.Background(), evtResp, callerID)
 }
 
 // ── helpers ──

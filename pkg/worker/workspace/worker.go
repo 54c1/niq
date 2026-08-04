@@ -22,7 +22,7 @@ const (
 // Config holds the configuration for a WorkspaceWorker.
 type Config struct {
 	ID      string
-	Bus     corebus.EventBusClient
+	Bus     corebus.WorkerSideChannel
 	Backend any
 	Mode    Mode
 }
@@ -46,7 +46,7 @@ func New(cfg Config) *WorkspaceWorker {
 		event.NewPattern("worker.discover"),
 	}
 	return &WorkspaceWorker{
-		BaseWorker: worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
+		BaseWorker: worker.NewBaseWorkerV2(cfg.ID, subs, cfg.Bus),
 		backend:    cfg.Backend,
 		mode:       cfg.Mode,
 	}
@@ -64,8 +64,7 @@ func (w *WorkspaceWorker) Start(ctx context.Context) error {
 	w.cancelRun = cancelFn
 
 	w.buildHandlers()
-	w.Bus.Subscribe(w.Subscriptions())
-	busCh, _ := w.Bus.Receive(runCtx)
+	busCh, _ := w.Channel.Receive(runCtx)
 	go w.watch(runCtx, busCh)
 	w.publishReady()
 	w.started = true
@@ -89,7 +88,7 @@ func (w *WorkspaceWorker) Restore(state []byte) error { return nil }
 
 // ── Event loop ──
 
-func (w *WorkspaceWorker) watch(ctx context.Context, busCh chan event.Event) {
+func (w *WorkspaceWorker) watch(ctx context.Context, busCh <-chan event.Event) {
 	for {
 		select {
 		case evt := <-busCh:

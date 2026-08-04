@@ -20,7 +20,7 @@ import (
 // Config holds configuration for an HTTP worker.
 type Config struct {
 	ID   string
-	Bus  corebus.EventBusClient
+	Bus  corebus.WorkerSideChannel
 	HTTP *http.Client // defaults to a 30s timeout client
 
 	// MCP config path — when set, the worker connects to the referenced
@@ -51,7 +51,7 @@ func New(cfg Config) *Worker {
 		c = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &Worker{
-		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
+		BaseWorker: worker.NewBaseWorkerV2(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),
@@ -70,8 +70,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	runCtx, cancelFn := context.WithCancel(ctx)
 	w.cancelRun = cancelFn
-	w.Bus.Subscribe(w.Subscriptions())
-	busCh, _ := w.Bus.Receive(runCtx)
+	busCh, _ := w.Channel.Receive(runCtx)
 	go w.watch(runCtx, busCh)
 	w.publishReady()
 	w.started = true
@@ -96,7 +95,7 @@ func (w *Worker) Restore(state []byte) error { return nil }
 
 // ── Event loop ──
 
-func (w *Worker) watch(ctx context.Context, busCh chan event.Event) {
+func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 	for {
 		select {
 		case evt := <-busCh:
@@ -170,7 +169,7 @@ func (w *Worker) publishReady() {
 			})
 		}
 	}
-	_ = w.Bus.Publish(event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "http",
 		"tools":     tools,
@@ -183,8 +182,7 @@ func (w *Worker) publishCompleted(callerID, callID, toolName, result string) {
 		"name":    toolName,
 		"result":  result,
 	})
-	evt.TargetWorkerID = callerID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 func (w *Worker) publishFailed(callerID, callID, toolName string, err error) {
@@ -193,6 +191,5 @@ func (w *Worker) publishFailed(callerID, callID, toolName string, err error) {
 		"name":    toolName,
 		"error":   err.Error(),
 	})
-	evt.TargetWorkerID = callerID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }

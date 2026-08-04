@@ -171,8 +171,7 @@ func (w *WorkspaceWorker) handleToolCall(ctx context.Context, evt event.Event) {
 			"name":      name,
 			"partial":   partial,
 		})
-		evt.TraceID = traceID
-		_ = w.Bus.Publish(evt)
+		_ = w.Channel.Send(context.Background(), evt, callerID)
 	})
 
 	result, err := handler(ctx, args)
@@ -194,9 +193,8 @@ func (w *WorkspaceWorker) publishCompleted(callerID, callID, toolName, result, t
 		"name":      toolName,
 		"result":    result,
 	})
-	evt.TargetWorkerID = callerID
 	evt.TraceID = traceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 	log.Printf("[workspace %s] completed %s", w.ID(), callID)
 }
 
@@ -207,9 +205,8 @@ func (w *WorkspaceWorker) publishFailed(callerID, callID, toolName string, err e
 		"name":      toolName,
 		"error":     err.Error(),
 	})
-	evt.TargetWorkerID = callerID
 	evt.TraceID = traceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 // publishReady announces available tools via worker.ready.
@@ -339,6 +336,6 @@ func (w *WorkspaceWorker) publishReady() {
 		"type":      "workspace",
 		"tools":     ts,
 	})
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Broadcast(context.Background(), evt)
 	log.Printf("[workspace %s] published worker.ready with %d tools (mode=%d)", w.ID(), len(ts), w.mode)
 }

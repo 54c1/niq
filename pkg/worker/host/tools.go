@@ -1,16 +1,18 @@
 package host
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	corebus "github.com/54c1/niq/core/bus"
 	"github.com/54c1/niq/core/event"
 	programpkg "github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/pkg/helper/openai"
-	inprocesspkg "github.com/54c1/niq/pkg/service/bus/transport/inprocess"
+	inprocess "github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/wsbackend"
 	"github.com/54c1/niq/pkg/worker/reason"
 	"github.com/54c1/niq/pkg/worker/workspace"
@@ -68,22 +70,28 @@ func (w *HostWorker) spawnWorkspace(args map[string]any) (string, error) {
 	}
 	id := "ws-" + sanitizeID(path)
 
-	// Register on shared bus and create a per-worker client.
-	subAllow := []string{"tool.requested", "worker.discover"}
-	if err := w.sharedBus.RegisterWorker(id, []string{"*"}, subAllow); err != nil {
+	// Register identity.
+	if err := w.registry.Register(corebus.Identity{
+		WorkerID:       id,
+		PublishAllow:   []string{"*"},
+		SubscribeAllow: []string{"tool.requested", "worker.discover"},
+	}); err != nil {
 		if !strings.Contains(err.Error(), "already registered") {
 			return "", err
 		}
 	}
-	childClient, err := inprocesspkg.NewClient(w.sharedBus, id)
-	if err != nil {
+
+	// Create worker side channel via the listener.
+	childCh := inprocess.NewWorkerSide(id, w.listener)
+	if err := childCh.Connect(context.Background(), "inproc://niq"); err != nil {
 		return "", err
 	}
 
+	var err error
 	err = w.engine.CreateWorker(id, "workspace", func() worker.ManagedWorker {
 		return workspace.New(workspace.Config{
 			ID:      id,
-			Bus:     childClient,
+			Bus:     childCh,
 			Backend: wsbackend.NewEmbeddedBackend(path),
 		})
 	})
@@ -108,22 +116,29 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 	// Parse event subscriptions from args.
 	events := parseEvents(args)
 
-	// Register on shared bus and create a per-worker client.
+	// Register identity.
 	subAllow := []string{
 		"tool.completed", "tool.failed", "tool.rejected",
 		"worker.ready", "worker.gone", "worker.discover", "worker.abort",
 		"timer.timeout", "timer.reminder", "worker.input", "tool.requested",
 	}
-	if err := w.sharedBus.RegisterWorker(id, []string{"*"}, subAllow); err != nil {
+	if err := w.registry.Register(corebus.Identity{
+		WorkerID:       id,
+		PublishAllow:   []string{"*"},
+		SubscribeAllow: subAllow,
+	}); err != nil {
 		if !strings.Contains(err.Error(), "already registered") {
 			return "", err
 		}
 	}
-	childClient, err := inprocesspkg.NewClient(w.sharedBus, id)
-	if err != nil {
+
+	// Create worker side channel via the listener.
+	childCh := inprocess.NewWorkerSide(id, w.listener)
+	if err := childCh.Connect(context.Background(), "inproc://niq"); err != nil {
 		return "", err
 	}
 
+	var err error
 	err = w.engine.CreateWorker(id, "reason", func() worker.ManagedWorker {
 		return reason.NewWorker(reason.Config{
 			ID: id,
@@ -134,7 +149,7 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 			}),
 			Programs: programs,
 			Handlers: events,
-			Bus:      childClient,
+			Bus:      childCh,
 		})
 	})
 	if err != nil {
@@ -255,7 +270,7 @@ func (w *HostWorker) handleDestroy(args map[string]any) (string, error) {
 	if err := w.engine.DestroyWorker(workerID); err != nil {
 		return "", err
 	}
-	_ = w.Bus.Publish(event.New("worker.gone", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.gone", w.ID(), map[string]any{
 		"worker_id": workerID,
 	}))
 	return fmt.Sprintf(`{"worker_id":"%s","status":"destroyed"}`, workerID), nil
@@ -264,7 +279,7 @@ func (w *HostWorker) handleDestroy(args map[string]any) (string, error) {
 // ── Bus publishing ──
 
 func (w *HostWorker) publishReady() {
-	_ = w.Bus.Publish(event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "host",
 		"tools": []map[string]any{
@@ -361,9 +376,8 @@ func (w *HostWorker) publishCompleted(callerID, callID, toolName, result, traceI
 		"name":    toolName,
 		"result":  result,
 	})
-	evt.TargetWorkerID = callerID
 	evt.TraceID = traceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 func (w *HostWorker) publishFailed(callerID, callID, toolName string, err error, traceID string) {
@@ -372,9 +386,8 @@ func (w *HostWorker) publishFailed(callerID, callID, toolName string, err error,
 		"name":    toolName,
 		"error":   err.Error(),
 	})
-	evt.TargetWorkerID = callerID
 	evt.TraceID = traceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 func sanitizeID(path string) string {

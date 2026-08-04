@@ -22,7 +22,7 @@ import (
 // Config holds the configuration for a Program Worker.
 type Config struct {
 	ID      string
-	Bus     corebus.EventBusClient
+	Bus     corebus.WorkerSideChannel
 	Backend program.Backend
 }
 
@@ -52,7 +52,7 @@ func New(cfg Config) *Worker {
 		id = "program"
 	}
 	return &Worker{
-		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
+		BaseWorker: worker.NewBaseWorkerV2(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),
@@ -79,8 +79,7 @@ func (w *Worker) Start(ctx context.Context) error {
 		log.Printf("[program] discovery warning: %v", err)
 	}
 
-	w.Bus.Subscribe(w.Subscriptions())
-	busCh, _ := w.Bus.Receive(runCtx)
+	busCh, _ := w.Channel.Receive(runCtx)
 	go w.watch(runCtx, busCh)
 	w.publishReady()
 
@@ -178,7 +177,7 @@ func matchProgram(p *program.Program, query string) bool {
 
 // ── Event loop ──
 
-func (w *Worker) watch(ctx context.Context, busCh chan event.Event) {
+func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 	for {
 		select {
 		case evt := <-busCh:
@@ -205,7 +204,7 @@ func (w *Worker) process(ctx context.Context, evt event.Event) {
 
 // publishReady announces this worker's tools on the bus.
 func (w *Worker) publishReady() {
-	_ = w.Bus.Publish(event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "program",
 		"tools": []map[string]any{

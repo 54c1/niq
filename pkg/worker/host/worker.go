@@ -13,18 +13,19 @@ import (
 	"sync"
 
 	corebus "github.com/54c1/niq/core/bus"
-	svcbus "github.com/54c1/niq/pkg/service/bus"
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/worker"
+	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/workerhost"
 )
 
 // Config holds the configuration for a HostWorker.
 type Config struct {
-	ID     string
-	Bus    corebus.EventBusClient // data-plane client
-	Shared *svcbus.Bus           // control-plane bus for RegisterWorker
-	Engine *workerhost.WorkerService
+	ID         string
+	Bus        corebus.WorkerSideChannel // data-plane client
+	Registry   corebus.IdentityRegistry  // control-plane identity registry
+	Listener   *inprocess.InProcListener  // for spawning workers
+	Engine     *workerhost.WorkerService
 }
 
 // HostWorker is a bus-facing worker that manages other worker lifecycles.
@@ -33,11 +34,12 @@ type Config struct {
 // delegated to workerhost.WorkerService.
 type HostWorker struct {
 	worker.BaseWorker
-	sharedBus *svcbus.Bus
-	engine    *workerhost.WorkerService
-	started   bool
-	cancel    context.CancelFunc
-	mu        sync.Mutex
+	registry corebus.IdentityRegistry
+	listener *inprocess.InProcListener
+	engine   *workerhost.WorkerService
+	started  bool
+	cancel   context.CancelFunc
+	mu       sync.Mutex
 }
 
 // New creates a HostWorker that delegates lifecycle operations to engine.
@@ -47,12 +49,13 @@ func New(cfg Config) *HostWorker {
 		id = "host"
 	}
 	return &HostWorker{
-		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
+		BaseWorker: worker.NewBaseWorkerV2(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),
-		sharedBus: cfg.Shared,
-		engine:    cfg.Engine,
+		registry: cfg.Registry,
+		listener: cfg.Listener,
+		engine:   cfg.Engine,
 	}
 }
 
@@ -68,8 +71,7 @@ func (w *HostWorker) Start(ctx context.Context) error {
 	runCtx, cancelFn := context.WithCancel(ctx)
 	w.cancel = cancelFn
 
-	w.Bus.Subscribe(w.Subscriptions())
-	busCh, _ := w.Bus.Receive(runCtx)
+	busCh, _ := w.Channel.Receive(runCtx)
 	go w.watch(runCtx, busCh)
 	w.publishReady()
 
@@ -101,7 +103,7 @@ func (w *HostWorker) Restore(state []byte) error { return nil }
 
 // ── Event loop ──
 
-func (w *HostWorker) watch(ctx context.Context, busCh chan event.Event) {
+func (w *HostWorker) watch(ctx context.Context, busCh <-chan event.Event) {
 	for {
 		select {
 		case evt := <-busCh:

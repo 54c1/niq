@@ -46,11 +46,11 @@ func (w *Worker) SendInput(ctx context.Context, text string, target string, mode
 		payload["input_mode"] = mode
 	}
 	evt := event.New("worker.input", w.ID(), payload)
-	if target != "" {
-		evt.TargetWorkerID = target
-	}
 	evt.TraceID = evt.ID
-	return w.Bus.Publish(evt)
+	if target != "" {
+		return w.Channel.Send(context.Background(), evt, target)
+	}
+	return w.Channel.Broadcast(context.Background(), evt)
 }
 
 // Workers returns the current set of known worker IDs and their types.
@@ -112,9 +112,9 @@ func (w *Worker) MakeDecision(ctx context.Context, reqID, decision, reasoning st
 		"input_mode":      "append",
 	})
 	if ok && req != nil {
-		evt.TargetWorkerID = req.WorkerID
+		return w.Channel.Send(context.Background(), evt, req.WorkerID)
 	}
-	return w.Bus.Publish(evt)
+	return w.Channel.Broadcast(context.Background(), evt)
 }
 
 // Abort sends a worker.abort event to interrupt a worker's current reasoning.
@@ -123,9 +123,9 @@ func (w *Worker) Abort(ctx context.Context, target string) error {
 		"worker_id": w.ID(),
 	})
 	if target != "" {
-		evt.TargetWorkerID = target
+		return w.Channel.Send(context.Background(), evt, target)
 	}
-	return w.Bus.Publish(evt)
+	return w.Channel.Broadcast(context.Background(), evt)
 }
 
 // Follow returns a channel that delivers events matching the filter.
