@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	corebus "github.com/54c1/niq/core/bus"
 	"github.com/54c1/niq/core/event"
@@ -53,7 +54,12 @@ func clientFor(ctx BuildContext, cfg WorkerConfig) (corebus.WorkerSideChannel, e
 		PublishAllow:   pubAllow,
 		SubscribeAllow: subAllow,
 	}); err != nil {
-		return nil, fmt.Errorf("swarm: register worker %q: %w", cfg.ID, err)
+		// If already registered from a previous run, update the allow lists.
+		if strings.Contains(err.Error(), "already registered") {
+			ctx.Registry.Update(cfg.ID, pubAllow, subAllow)
+		} else {
+			return nil, fmt.Errorf("swarm: register worker %q: %w", cfg.ID, err)
+		}
 	}
 
 	ch := inprocess.NewWorkerSide(cfg.ID, ctx.Listener)
