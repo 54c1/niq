@@ -12,9 +12,10 @@ import (
 // embed. It stores an id and subscription list; [Start] is a
 // intentional no-ops that callers are expected to override.
 type BaseWorker struct {
-	id    string
-	subs  []event.EventPattern
-	Bus corebus.EventBusClient
+	id      string
+	subs    []event.EventPattern
+	Bus     corebus.EventBusClient // Deprecated: use Channel
+	Channel corebus.WorkerSideChannel
 }
 
 // NewBaseWorker returns a BaseWorker with the given id and subscriptions.
@@ -23,6 +24,15 @@ func NewBaseWorker(id string, subs []event.EventPattern, busClient corebus.Event
 		id:  id,
 		subs: subs,
 		Bus: busClient,
+	}
+}
+
+// NewBaseWorkerV2 creates a BaseWorker with the new WorkerSideChannel.
+func NewBaseWorkerV2(id string, subs []event.EventPattern, ch corebus.WorkerSideChannel) BaseWorker {
+	return BaseWorker{
+		id:      id,
+		subs:    subs,
+		Channel: ch,
 	}
 }
 

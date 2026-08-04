@@ -1,6 +1,7 @@
 package timer
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -23,7 +24,7 @@ func (e *Entry) Stop() bool {
 // afterFunc sets a timer that publishes a timer.elapsed trigger event when it fires.
 func afterFunc(
 	workerID string,
-	bus corebus.EventBusClient,
+	bus corebus.WorkerSideChannel,
 	timerID, callerID string,
 	durationMS int,
 	purpose, tickType, traceID string,
@@ -44,9 +45,8 @@ func afterFunc(
 			"caller_id": callerID,
 			"result":    string(result),
 		})
-		evt.TargetWorkerID = callerID
 		evt.TraceID = traceID
-		_ = bus.Publish(evt)
+		_ = bus.Send(context.Background(), evt, callerID)
 	})
 
 	return &Entry{t: t}
