@@ -12,6 +12,7 @@ import (
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
 	programpkg "github.com/54c1/niq/core/program"
+	"github.com/54c1/niq/core/store"
 	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/pkg/helper/openai"
 	"github.com/54c1/niq/pkg/service/eventbus"
@@ -34,6 +35,7 @@ type BuildContext struct {
 	Listener     *inprocess.InProcListener
 	Engine       *eventbus.Engine
 	WorkerSvc    *workerhost.WorkerService
+	Store        store.EventStore
 	WebUIAddr    string
 	ProgramsRoot string
 }
@@ -208,8 +210,9 @@ func buildHIW(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) 
 	}
 
 	h := hiw.New(hiw.Config{
-		ID:  cfg.ID,
-		Bus: client,
+		ID:    cfg.ID,
+		Bus:   client,
+		Store: ctx.Store,
 	})
 
 	if ctx.WebUIAddr != "" {

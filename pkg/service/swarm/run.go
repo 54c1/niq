@@ -49,8 +49,9 @@ func RunSwarm(opts RunOptions) error {
 		return fmt.Errorf("swarm: create registry: %w", err)
 	}
 
-	// 3. Create event bus engine.
-	engine := eventbus.NewEngine(registry, nil)
+	// 3. Create event bus engine with in-memory event store.
+	evtStore := eventbus.NewMemoryEventStore()
+	engine := eventbus.NewEngine(registry, evtStore)
 
 	// 4. Create in-process listener and start accepting connections.
 	listener := inprocess.NewInProcListener()
@@ -76,6 +77,7 @@ func RunSwarm(opts RunOptions) error {
 		Listener:     listener,
 		Engine:       engine,
 		WorkerSvc:    workerSvc,
+		Store:        evtStore,
 		WebUIAddr:    opts.WebUIAddr,
 		ProgramsRoot: opts.ProgramsRoot,
 	}
