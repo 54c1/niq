@@ -1,0 +1,184 @@
+package eventbus
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+
+	corebus "github.com/54c1/niq/core/bus"
+	"github.com/54c1/niq/core/event"
+	"github.com/54c1/niq/core/store"
+)
+
+// Engine is the core event routing engine — the "ball".
+//
+// It holds the channels of all online workers and the identity registry.
+// When a Request arrives (via HandleRequest), it routes the event to the
+// appropriate target channels:
+//
+//   - Send: looks up the target worker's channel and delivers directly
+//   - Broadcast: looks up all online workers whose SubscribeAllow matches
+//     the event type, and delivers to each
+//
+// Engine has no goroutines. It is a data structure with methods, called
+// by the Attach/watch goroutines or by control-plane code.
+type Engine struct {
+	mu        sync.RWMutex
+	channels  map[string]corebus.BusSideChannel
+	registry  corebus.IdentityRegistry
+	store     store.AppendStore // optional, nil to disable persistence
+}
+
+// NewEngine creates a new Engine.
+// store may be nil; if nil, events are not persisted.
+func NewEngine(registry corebus.IdentityRegistry, store store.AppendStore) *Engine {
+	return &Engine{
+		channels: make(map[string]corebus.BusSideChannel),
+		registry: registry,
+		store:    store,
+	}
+}
+
+// Connect registers a worker as online by associating its channel.
+// The worker must have a registered identity.
+func (e *Engine) Connect(workerID string, ch corebus.BusSideChannel) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, ok := e.registry.Lookup(workerID); !ok {
+		return fmt.Errorf("eventbus: cannot connect %s: identity not registered", workerID)
+	}
+	if _, ok := e.channels[workerID]; ok {
+		return fmt.Errorf("eventbus: worker %s already connected", workerID)
+	}
+	e.channels[workerID] = ch
+	log.Printf("[eventbus] worker %s connected", workerID)
+	return nil
+}
+
+// Disconnect marks a worker as offline and removes its channel.
+func (e *Engine) Disconnect(workerID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.channels, workerID)
+	log.Printf("[eventbus] worker %s disconnected", workerID)
+}
+
+// HandleRequest processes a delivery request from a worker.
+// from is the worker ID that sent the request.
+func (e *Engine) HandleRequest(ctx context.Context, req corebus.Request, from string) {
+	switch req.Type {
+	case corebus.RequestSend:
+		e.handleSend(ctx, req, from)
+	case corebus.RequestBroadcast:
+		e.handleBroadcast(ctx, req, from)
+	default:
+		log.Printf("[eventbus] unknown request type: %s (from %s)", req.Type, from)
+	}
+}
+
+// handleSend routes events to specific target workers.
+func (e *Engine) handleSend(ctx context.Context, req corebus.Request, from string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, evt := range req.Events {
+		evt.WorkerId = from // ensure identity is set by bus, not by sender
+		evt.TraceID = req.TraceID
+
+		for _, target := range req.Targets {
+			ch, ok := e.channels[target]
+			if !ok {
+				log.Printf("[eventbus] send: target %s not online (from %s)", target, from)
+				continue
+			}
+			if err := ch.Send(ctx, evt); err != nil {
+				log.Printf("[eventbus] send: deliver to %s failed: %v", target, err)
+			}
+		}
+
+		e.persistEvent(ctx, evt)
+	}
+}
+
+// handleBroadcast routes events to all online workers whose SubscribeAllow
+// matches the event type. The sender also receives the broadcast if its
+// subscription matches.
+func (e *Engine) handleBroadcast(ctx context.Context, req corebus.Request, from string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, evt := range req.Events {
+		evt.WorkerId = from
+		evt.TraceID = req.TraceID
+
+		// Find all targets: online workers whose SubscribeAllow matches.
+		var targets []string
+		for workerID, ch := range e.channels {
+			identity, ok := e.registry.Lookup(workerID)
+			if !ok {
+				continue
+			}
+			if !patternMatchesAny(evt.Type, identity.SubscribeAllow) {
+				continue
+			}
+			targets = append(targets, workerID)
+			if err := ch.Send(ctx, evt); err != nil {
+				log.Printf("[eventbus] broadcast: deliver to %s failed: %v", workerID, err)
+			}
+		}
+
+		log.Printf("[eventbus] broadcast: %s from %s to %d worker(s)", evt.Type, from, len(targets))
+		e.persistEvent(ctx, evt)
+	}
+}
+
+// persistEvent writes the event to the store if configured.
+func (e *Engine) persistEvent(ctx context.Context, evt event.Event) {
+	if e.store == nil {
+		return
+	}
+	if err := e.store.Append(ctx, evt); err != nil {
+		log.Printf("[eventbus] persist event %s: %v", evt.ID, err)
+	}
+}
+
+// Channel returns the BusSideChannel for a connected worker, or nil.
+// Used by control-plane code for direct access (e.g., health checks).
+func (e *Engine) Channel(workerID string) corebus.BusSideChannel {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.channels[workerID]
+}
+
+// OnlineWorkers returns the IDs of all currently connected workers.
+func (e *Engine) OnlineWorkers() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	ids := make([]string, 0, len(e.channels))
+	for id := range e.channels {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// patternMatchesAny reports whether the event type matches any of the patterns.
+// Supports exact match, "*", and "Prefix.*" wildcards.
+func patternMatchesAny(eventType string, patterns []string) bool {
+	for _, p := range patterns {
+		if p == "*" || p == eventType {
+			return true
+		}
+		// Prefix match: "github.*" matches "github.issue.new"
+		if len(p) > 2 && p[len(p)-2:] == ".*" {
+			prefix := p[:len(p)-2]
+			if len(eventType) >= len(prefix) && eventType[:len(prefix)] == prefix &&
+				(len(eventType) == len(prefix) || eventType[len(prefix)] == '.') {
+				return true
+			}
+		}
+	}
+	return false
+}
+

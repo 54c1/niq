@@ -23,6 +23,9 @@ type BusSideChannel interface {
 	// by the transport layer (e.g., a session ID).
 	ID() string
 
+	// WorkerID returns the identity of the worker on the other end.
+	WorkerID() string
+
 	// Send delivers a fully-routed event to the worker.
 	// The event has already been through routing — the worker
 	// only needs to consume it.
