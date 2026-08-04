@@ -45,6 +45,7 @@ type Event struct {
 	SpecVersion    string         `json:"specversion,omitempty"`
 	DataSchema     string         `json:"dataschema,omitempty"`
 	Timestamp      int64          `json:"timestamp"`
+	Recipients     []string       `json:"recipients,omitempty"` // populated by engine during routing
 }
 
 // New creates a new Event with defaults.

@@ -98,6 +98,7 @@ func (e *Engine) handleSend(ctx context.Context, req corebus.Request, from strin
 			}
 		}
 
+		evt.Recipients = req.Targets
 		e.persistEvent(ctx, evt)
 	}
 }
@@ -129,6 +130,7 @@ func (e *Engine) handleBroadcast(ctx context.Context, req corebus.Request, from 
 			}
 		}
 
+		evt.Recipients = targets
 		log.Printf("[eventbus] broadcast: %s from %s to %d worker(s)", evt.Type, from, len(targets))
 		e.persistEvent(ctx, evt)
 	}
