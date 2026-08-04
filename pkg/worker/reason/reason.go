@@ -105,7 +105,7 @@ func (w *Worker) reason(ctx context.Context) {
 			"stop_reason": "error",
 		})
 		errEvt.TraceID = w.currentTraceID
-		_ = w.Bus.Publish(errEvt)
+		_ = w.Channel.Broadcast(context.Background(), errEvt)
 		w.publishReasonEnd("error")
 		w.isReasoning = false
 		w.mu.Unlock()
@@ -239,7 +239,7 @@ func (w *Worker) publishResponse(msg llm.Message) {
 		"stop_reason": msg.StopReason,
 	})
 	evt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Broadcast(context.Background(), evt)
 	log.Printf("[reason %s] published reason.response, text_count=%d", w.ID(), len(texts))
 }
 
@@ -248,7 +248,7 @@ func (w *Worker) publishReasonStart() {
 		"worker_id": w.ID(),
 	})
 	evt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
 func (w *Worker) publishReasonEnd(stopReason string) {
@@ -257,7 +257,7 @@ func (w *Worker) publishReasonEnd(stopReason string) {
 		"stop_reason": stopReason,
 	})
 	evt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
 func (w *Worker) publishThinking(blocks []llm.ContentBlock) {
@@ -270,7 +270,7 @@ func (w *Worker) publishThinking(blocks []llm.ContentBlock) {
 		"content": texts,
 	})
 	evt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
 // insertPlaceholders adds pending tool_result entries to messages

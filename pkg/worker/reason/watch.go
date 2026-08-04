@@ -19,7 +19,7 @@ import (
 // watch is the single event loop goroutine. It blocks on busCh waiting
 // for events, calls process() to handle them, and then calls tryReason()
 // which starts reasoning when needReason is set and no reasoning is running.
-func (w *Worker) watch(ctx context.Context, busCh chan event.Event) {
+func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 	for {
 		select {
 		case evt := <-busCh:

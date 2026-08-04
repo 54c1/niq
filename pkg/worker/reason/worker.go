@@ -26,7 +26,7 @@ type Config struct {
 	Handlers        []EventConverter
 	Provider        llm.LLMProvider
 	Programs        []program.Program
-	Bus             corebus.EventBusClient
+	Bus             corebus.WorkerSideChannel
 	ReasoningEffort *string
 }
 
@@ -97,7 +97,7 @@ func NewWorker(cfg Config) *Worker {
 	// Worker is handled at runtime through program.load tool calls.
 
 	w := &Worker{
-		BaseWorker:      worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
+		BaseWorker:      worker.NewBaseWorkerV2(cfg.ID, subs, cfg.Bus),
 		llmProvider:     cfg.Provider,
 		callTracker:     NewToolCallTracker(cfg.Bus),
 		eventConverter:  cfg.Handlers,
@@ -125,13 +125,12 @@ func (w *Worker) Start(ctx context.Context) error {
 	w.cancelRun = cancelFn
 
 	// Subscribe and receive from the bus
-	w.Bus.Subscribe(w.Subscriptions())
-	busCh, _ := w.Bus.Receive(runCtx)
+	busCh, _ := w.Channel.Receive(runCtx)
 	go w.watch(runCtx, busCh)
 
 	// Announce presence so other workers can discover this one.
 	log.Printf("[llmworker %s] publishing worker.ready", w.ID())
-	_ = w.Bus.Publish(event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
 		"publishes": []map[string]any{
@@ -144,7 +143,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// Publish worker.discover to trigger other Workers already on the bus
 	// to re-announce their capabilities via worker.ready.
-	_ = w.Bus.Publish(event.New("worker.discover", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 	}))
 
@@ -154,7 +153,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 // publishReady re-announces this worker's presence on the bus.
 func (w *Worker) publishReady() {
-	_ = w.Bus.Publish(event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
 		"publishes": []map[string]any{

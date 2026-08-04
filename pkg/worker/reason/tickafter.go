@@ -23,6 +23,8 @@
 package reason
 
 import (
+	"context"
+
 	"github.com/54c1/niq/core/event"
 )
 
@@ -48,8 +50,7 @@ func (w *Worker) cancelActiveTickers() {
 			"name":      "cancel",
 			"arguments": map[string]any{"timer_id": timerID},
 		})
-		evt.TargetWorkerID = targetID
-		_ = w.Bus.Publish(evt)
+		_ = w.Channel.Send(context.Background(), evt, targetID)
 		delete(w.activeTickafters, timerID)
 	}
 }

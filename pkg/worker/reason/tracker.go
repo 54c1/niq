@@ -5,6 +5,7 @@
 package reason
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -56,13 +57,13 @@ func (tc *ToolCall) Interrupted() bool { return tc.Status == ToolInterrupted }
 // tool.completed, tool.failed, or tool.rejected events arrive, it
 // resolves the corresponding call.
 type ToolCallTracker struct {
-	bus     corebus.EventBusClient
+	bus     corebus.WorkerSideChannel
 	mu      sync.Mutex
 	pending map[string]*ToolCall // keyed by callID
 }
 
 // NewToolCallTracker creates a ToolCallTracker backed by the given bus client.
-func NewToolCallTracker(bus corebus.EventBusClient) *ToolCallTracker {
+func NewToolCallTracker(bus corebus.WorkerSideChannel) *ToolCallTracker {
 	return &ToolCallTracker{
 		bus:     bus,
 		pending: make(map[string]*ToolCall),
@@ -114,9 +115,8 @@ func (m *ToolCallTracker) Request(targetID, callerID string, toolCalls []llm.Con
 			"name":      tc.ToolName,
 			"arguments": argsMap,
 		})
-		evt.TargetWorkerID = targetID
 		evt.TraceID = traceID
-		_ = m.bus.Publish(evt)
+		_ = m.bus.Send(context.Background(), evt, targetID)
 	}
 }
 

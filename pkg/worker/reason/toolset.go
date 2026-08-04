@@ -6,6 +6,7 @@
 package reason
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -133,8 +134,7 @@ func (w *Worker) handleToolRequest(evt event.Event) {
 			"call_id": callID, "name": toolName,
 			"error": fmt.Sprintf("unknown tool: %s", toolName),
 		})
-		evt.TargetWorkerID = callerID
-		_ = w.Bus.Publish(evt)
+		_ = w.Channel.Send(context.Background(), evt, callerID)
 	}
 }
 
@@ -146,18 +146,15 @@ func (w *Worker) handlePublishMessage(callID, toolName, callerID string, args ma
 			"call_id": callID, "name": toolName,
 			"error": "target and text are required",
 		})
-		evt.TargetWorkerID = callerID
-		evt.TraceID = w.currentTraceID
-		_ = w.Bus.Publish(evt)
+		_ = w.Channel.Send(context.Background(), evt, callerID)
 		return
 	}
 
 	msgEvt := event.New("worker.input", w.ID(), map[string]any{
 		"text": text,
 	})
-	msgEvt.TargetWorkerID = target
 	msgEvt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(msgEvt)
+	_ = w.Channel.Send(context.Background(), msgEvt, target)
 
 	w.publishSuccess(callID, toolName, callerID,
 		fmt.Sprintf("message sent to %s", target))
@@ -168,7 +165,7 @@ func (w *Worker) handlePublishMessage(callID, toolName, callerID string, args ma
 // the cache for the next call.
 func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[string]any) {
 	// Trigger re-discovery so the next call gets fresh data.
-	_ = w.Bus.Publish(event.New("worker.discover", w.ID(), nil))
+	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), nil))
 
 	// Aggregate tools and publishes by provider.
 	type workerInfo struct {
@@ -222,9 +219,8 @@ func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
 		"call_id": callID, "name": toolName,
 		"result": result,
 	})
-	evt.TargetWorkerID = callerID
 	evt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
@@ -232,7 +228,6 @@ func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
 		"call_id": callID, "name": toolName,
 		"error": errMsg,
 	})
-	evt.TargetWorkerID = callerID
 	evt.TraceID = w.currentTraceID
-	_ = w.Bus.Publish(evt)
+	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
