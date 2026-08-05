@@ -15,7 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/54c1/niq/pkg/service/swarm"
+	"github.com/54c1/niq/internal/swarm"
 )
 
 func main() {

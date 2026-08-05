@@ -10,10 +10,12 @@ import (
 	"syscall"
 
 	"github.com/54c1/niq/core/worker"
+	"github.com/54c1/niq/internal/swarm/webui"
 	"github.com/54c1/niq/pkg/service/eventbus"
 	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/workerhost"
+	"github.com/54c1/niq/pkg/worker/hiw"
 )
 
 // RunOptions controls the swarm command's behaviour.
@@ -83,9 +85,7 @@ func RunSwarm(opts RunOptions) error {
 		Listener:     listener,
 		Engine:       engine,
 		WorkerSvc:    workerSvc,
-		Store:        evtStore,
 		EventLog:     eventLog,
-		WebUIAddr:    opts.WebUIAddr,
 		ProgramsRoot: opts.ProgramsRoot,
 	}
 
@@ -107,9 +107,27 @@ func RunSwarm(opts RunOptions) error {
 	}
 
 	// 8. Register all workers with WorkerService.
+	var hiwWorker *hiw.Worker
 	for _, reg := range regs {
 		log.Printf("[swarm] registering worker: %s (type=%s)", reg.w.ID(), reg.typ)
 		workerSvc.Register(reg.w, reg.typ)
+		if reg.typ == "hiw" {
+			var ok bool
+			hiwWorker, ok = reg.w.(*hiw.Worker)
+			if !ok {
+				return fmt.Errorf("swarm: hiw worker %q has unexpected type", reg.w.ID())
+			}
+		}
+	}
+
+	// 9. Start WebUI server if configured.
+	if opts.WebUIAddr != "" && hiwWorker != nil {
+		s := webui.New(hiwWorker, eventLog, engine, opts.WebUIAddr, false)
+		go func() {
+			if err := s.Start(ctx); err != nil {
+				log.Printf("[swarm] webui error: %v", err)
+			}
+		}()
 	}
 
 	// 9. Run — starts all workers then blocks until ctx is cancelled.

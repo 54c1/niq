@@ -1,19 +1,8 @@
 // Package webui provides a web-based human interface for niq.
 //
 // It serves a React SPA that communicates with the backend via HTTP and SSE.
-// The backend is a standard http.Server that wraps a *hiw.Worker, exposing
-// its methods through REST endpoints and streaming events via SSE.
-//
-// Architecture:
-//
-//	Browser (React SPA)
-//	   │ HTTP (POST /api/input, GET /api/workers, ...)
-//	   │ SSE  (GET /api/stream)
-//	   ▼
-//	WebUI Server (Go, embedded or dev-proxied)
-//	   │ holds *hiw.Worker
-//	   ▼
-//	HIW Worker → Event Bus
+// It is owned by the swarm binary, not by the HIW worker — the HTTP server
+// directly references HIW (for sending input) and EventLog (for streaming).
 package webui
 
 import (
@@ -39,38 +28,31 @@ var embeddedAssets embed.FS
 
 // Server is the WebUI HTTP server.
 type Server struct {
-	hiw       hiw.WebUI
-	server    *http.Server
-	devMode   bool // when true, static assets are proxied to Vite dev server
-	eventLog  *eventbusapi.EventLog
-	engine    *eventbus.Engine
+	hiw      *hiw.Worker
+	server   *http.Server
+	devMode  bool // when true, static assets are proxied to Vite dev server
+	eventLog *eventbusapi.EventLog
+	engine   *eventbus.Engine
 }
 
-// New creates a WebUI Server that wraps the given HIW.
+// New creates a WebUI Server.
 // devMode enables Vite-proxy mode (frontend runs on :5173, APIs stay on addr).
-func New(h hiw.WebUI, addr string, devMode bool) *Server {
-	s := &Server{hiw: h, devMode: devMode}
+func New(h *hiw.Worker, el *eventbusapi.EventLog, engine *eventbus.Engine, addr string, devMode bool) *Server {
+	s := &Server{hiw: h, eventLog: el, engine: engine, devMode: devMode}
 	mux := http.NewServeMux()
 
 	// ── API routes ──
 
-	// SSE: real-time event stream.
+	// SSE: real-time event stream (from EventLog, which gets all events via Engine.OnEvent).
 	mux.HandleFunc("GET /api/stream", s.serveSSE)
 
-	// Input: publish user input to the bus.
+	// Input: publish user input to the bus as HIW.
 	mux.HandleFunc("POST /api/input", s.handleInput)
 
-	// Workers: list known workers.
+	// Workers: list online workers from the engine.
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
 
-	// Decisions: list pending decisions.
-	mux.HandleFunc("GET /api/decisions", s.handleDecisions)
-
-	// Decision: make a decision.
-	mux.HandleFunc("POST /api/decisions/{id}", s.handleDecision)
-
 	// Events pagination: load events before a given anchor.
-	// Initial load + realtime stream comes from the SSE endpoint.
 	mux.HandleFunc("GET /api/events/before/{id}", s.handleLoadBefore)
 
 	// Abort: interrupt a worker's current reasoning.
@@ -78,8 +60,6 @@ func New(h hiw.WebUI, addr string, devMode bool) *Server {
 
 	// ── Static assets ──
 	if devMode {
-		// In dev mode, Vite serves static assets on :5173.
-		// API requests hit Go directly. No static file serving from Go.
 		log.Println("[webui] dev mode: static assets served by Vite on :5173")
 	} else {
 		sub, err := fs.Sub(embeddedAssets, "assets/dist")
@@ -93,13 +73,7 @@ func New(h hiw.WebUI, addr string, devMode bool) *Server {
 	return s
 }
 
-// SetEventLog wires the bus event stream (EventLog via Engine.OnEvent) into
-// the WebUI so its SSE endpoint receives ALL events — including tool call
-// events sent via Send — not just what HIW's bus channel sees.
-func (s *Server) SetEventLog(el *eventbusapi.EventLog, engine *eventbus.Engine) {
-	s.eventLog = el
-	s.engine = engine
-}
+// Start begins serving HTTP. Blocks until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	log.Printf("[webui] listening on %s", s.server.Addr)
 
@@ -125,7 +99,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := hiw.Filter{
+	filter := eventbusapi.Filter{
 		WorkerID: r.URL.Query().Get("worker"),
 		TraceID:  r.URL.Query().Get("trace"),
 		Type:     r.URL.Query().Get("type"),
@@ -136,21 +110,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// Use the EventLog (hooked to Engine.OnEvent) when available — it receives
-	// ALL events (both Send and Broadcast), so tool call events will appear in
-	// the real-time stream. Fall back to HIW's Follow for backward compatibility.
-	var ch <-chan event.Event
-	var err error
-	if s.eventLog != nil {
-		busFilter := eventbusapi.Filter{
-			WorkerID: filter.WorkerID,
-			TraceID:  filter.TraceID,
-			Type:     filter.Type,
-		}
-		ch, err = s.eventLog.Follow(r.Context(), busFilter, limit)
-	} else {
-		ch, err = s.hiw.Follow(r.Context(), filter)
-	}
+	ch, err := s.eventLog.Follow(r.Context(), filter, limit)
 	if err != nil {
 		log.Printf("[webui] follow error: %v", err)
 		return
@@ -183,30 +143,8 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
-	workers := s.hiw.Workers()
+	workers := s.engine.OnlineWorkers()
 	json.NewEncoder(w).Encode(workers)
-}
-
-func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
-	decisions := s.hiw.PendingDecisions()
-	json.NewEncoder(w).Encode(decisions)
-}
-
-func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
-	reqID := r.PathValue("id")
-	var body struct {
-		Decision  string `json:"decision"`
-		Reasoning string `json:"reasoning"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.hiw.MakeDecision(r.Context(), reqID, body.Decision, body.Reasoning); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
@@ -214,9 +152,14 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		Target string `json:"target"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
-	if err := s.hiw.Abort(r.Context(), body.Target); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+
+	evt := event.New("worker.abort", "hiw", map[string]any{
+		"worker_id": "hiw",
+	})
+	if body.Target != "" {
+		_ = s.hiw.Channel.Send(r.Context(), evt, body.Target)
+	} else {
+		_ = s.hiw.Channel.Broadcast(r.Context(), evt)
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -225,13 +168,13 @@ func (s *Server) handleLoadBefore(w http.ResponseWriter, r *http.Request) {
 	anchor := r.PathValue("id")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
-	filter := hiw.Filter{
+	filter := eventbusapi.Filter{
 		WorkerID: r.URL.Query().Get("worker"),
 		TraceID:  r.URL.Query().Get("trace"),
 		Type:     r.URL.Query().Get("type"),
 	}
 
-	events, err := s.hiw.LoadBefore(r.Context(), filter, anchor, limit)
+	events, err := s.eventLog.LoadBefore(r.Context(), filter, anchor, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
