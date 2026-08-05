@@ -11,6 +11,7 @@ import (
 
 	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/pkg/service/eventbus"
+	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/workerhost"
 )
@@ -53,6 +54,11 @@ func RunSwarm(opts RunOptions) error {
 	evtStore := eventbus.NewMemoryEventStore()
 	engine := eventbus.NewEngine(registry, evtStore)
 
+	// 4. Create EventLog and hook it to the engine so every routed event
+	// (both Send and Broadcast) is pushed to SSE subscribers.
+	eventLog := eventbusapi.NewEventLog(engine, evtStore)
+	engine.OnEvent(eventLog.Hook())
+
 	// 4. Create in-process listener and start accepting connections.
 	listener := inprocess.NewInProcListener()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -68,16 +74,17 @@ func RunSwarm(opts RunOptions) error {
 		}
 	}()
 
-	// 5. Create WorkerService (control-plane lifecycle manager).
+	// 6. Create WorkerService (control-plane lifecycle manager).
 	workerSvc := workerhost.New()
 
-	// 6. Build build context.
+	// 7. Build build context.
 	buildCtx := BuildContext{
 		Registry:     registry,
 		Listener:     listener,
 		Engine:       engine,
 		WorkerSvc:    workerSvc,
 		Store:        evtStore,
+		EventLog:     eventLog,
 		WebUIAddr:    opts.WebUIAddr,
 		ProgramsRoot: opts.ProgramsRoot,
 	}

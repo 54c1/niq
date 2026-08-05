@@ -52,6 +52,7 @@ func (s *Store) migrate() error {
 		payload         TEXT NOT NULL DEFAULT '{}',
 		timestamp       INTEGER NOT NULL,
 		target_worker_id TEXT DEFAULT '',
+		recipients      TEXT DEFAULT '',
 		trace_id        TEXT,
 		specversion     TEXT,
 		dataschema      TEXT
@@ -76,11 +77,12 @@ func (s *Store) Append(ctx context.Context, events ...event.Event) error {
 
 	for _, evt := range events {
 		payload, _ := json.Marshal(evt.Payload)
+		recipients, _ := json.Marshal(evt.Recipients)
 		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO events
-			(id, type, worker_id, payload, timestamp, target_worker_id, trace_id, specversion, dataschema)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, type, worker_id, payload, timestamp, target_worker_id, recipients, trace_id, specversion, dataschema)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			evt.ID, evt.Type, evt.WorkerId, string(payload),
-			evt.Timestamp, evt.TargetWorkerID, evt.TraceID, evt.SpecVersion, evt.DataSchema,
+			evt.Timestamp, evt.TargetWorkerID, string(recipients), evt.TraceID, evt.SpecVersion, evt.DataSchema,
 		)
 		if err != nil {
 			return fmt.Errorf("sqlite: append event %s: %w", evt.ID, err)
@@ -95,16 +97,16 @@ func (s *Store) Append(ctx context.Context, events ...event.Event) error {
 
 func (s *Store) List(ctx context.Context, workerID string, opts store.QueryOpts) ([]event.Event, error) {
 	query := `SELECT id, type, worker_id, payload, timestamp, target_worker_id,
-			trace_id, specversion, dataschema
+			recipients, trace_id, specversion, dataschema
 			FROM events WHERE 1=1`
 	var args []any
 
 	if opts.WorkerID != "" {
-		query += " AND (worker_id = ? OR target_worker_id = ?)"
-		args = append(args, opts.WorkerID, opts.WorkerID)
+		query += " AND (worker_id = ? OR target_worker_id = ? OR recipients LIKE ?)"
+		args = append(args, opts.WorkerID, opts.WorkerID, "%"+opts.WorkerID+"%")
 	} else if workerID != "*" && workerID != "" {
-		query += " AND (worker_id = ? OR target_worker_id = ?)"
-		args = append(args, workerID, workerID)
+		query += " AND (worker_id = ? OR target_worker_id = ? OR recipients LIKE ?)"
+		args = append(args, workerID, workerID, "%"+workerID+"%")
 	}
 	if opts.TraceID != "" {
 		query += " AND trace_id = ?"
@@ -150,14 +152,18 @@ func (s *Store) query(ctx context.Context, query string, args ...any) ([]event.E
 		var (
 			evt             event.Event
 			payloadRaw      string
+			recipientsRaw   string
 			traceID, sv, ds sql.NullString
 		)
 		if err := rows.Scan(&evt.ID, &evt.Type, &evt.WorkerId, &payloadRaw,
-			&evt.Timestamp, &evt.TargetWorkerID, &traceID, &sv, &ds); err != nil {
+			&evt.Timestamp, &evt.TargetWorkerID, &recipientsRaw, &traceID, &sv, &ds); err != nil {
 			return nil, fmt.Errorf("sqlite: scan: %w", err)
 		}
 		if payloadRaw != "" {
 			json.Unmarshal([]byte(payloadRaw), &evt.Payload)
+		}
+		if recipientsRaw != "" {
+			json.Unmarshal([]byte(recipientsRaw), &evt.Recipients)
 		}
 		evt.TraceID = traceID.String
 		evt.SpecVersion = sv.String

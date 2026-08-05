@@ -57,9 +57,9 @@ func (s *MemoryEventStore) List(ctx context.Context, workerID string, opts store
 	var result []event.Event
 	allWorkers := workerID == "*"
 	for _, e := range s.events {
-		idOK := allWorkers || e.WorkerId == workerID || e.TargetWorkerID == workerID
+		idOK := allWorkers || e.WorkerId == workerID || e.TargetWorkerID == workerID || workerInRecipients(e, workerID)
 		if opts.WorkerID != "" {
-			idOK = e.WorkerId == opts.WorkerID || e.TargetWorkerID == opts.WorkerID
+			idOK = e.WorkerId == opts.WorkerID || e.TargetWorkerID == opts.WorkerID || workerInRecipients(e, opts.WorkerID)
 		}
 		if !idOK {
 			continue
@@ -89,6 +89,18 @@ func (s *MemoryEventStore) List(ctx context.Context, workerID string, opts store
 		result = result[:opts.Limit]
 	}
 	return result, nil
+}
+
+// workerInRecipients reports whether the given worker ID appears in the
+// event's Recipients list. Recipients is populated by the Engine during
+// routing to indicate which workers received the event.
+func workerInRecipients(e event.Event, id string) bool {
+	for _, r := range e.Recipients {
+		if r == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Compile-time checks.

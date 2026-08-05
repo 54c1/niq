@@ -16,6 +16,7 @@ import (
 	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/pkg/helper/openai"
 	"github.com/54c1/niq/pkg/service/eventbus"
+	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/pgbackend"
 	"github.com/54c1/niq/pkg/service/ui/webui"
@@ -36,6 +37,7 @@ type BuildContext struct {
 	Engine       *eventbus.Engine
 	WorkerSvc    *workerhost.WorkerService
 	Store        store.EventStore
+	EventLog     *eventbusapi.EventLog
 	WebUIAddr    string
 	ProgramsRoot string
 }
@@ -217,6 +219,10 @@ func buildHIW(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) 
 
 	if ctx.WebUIAddr != "" {
 		s := webui.New(h, ctx.WebUIAddr, false)
+		// Wire the bus event stream (EventLog via Engine.OnEvent) into the
+		// WebUI so its SSE endpoint receives ALL events — including tool call
+		// events sent via Send — not just what HIW's bus channel sees.
+		s.SetEventLog(ctx.EventLog, ctx.Engine)
 		h.SetUI("webui", s)
 	}
 

@@ -28,6 +28,7 @@ type Engine struct {
 	channels  map[string]corebus.BusSideChannel
 	registry  corebus.IdentityRegistry
 	store     store.AppendStore // optional, nil to disable persistence
+	onEvent   []func(event.Event) // optional hooks, called for every routed event
 }
 
 // NewEngine creates a new Engine.
@@ -136,13 +137,25 @@ func (e *Engine) handleBroadcast(ctx context.Context, req corebus.Request, from 
 	}
 }
 
-// persistEvent writes the event to the store if configured.
+// OnEvent registers a callback invoked for every event routed via
+// HandleRequest. Used by Stream to push events to observers.
+// Multiple callbacks can be registered; they are called in order.
+func (e *Engine) OnEvent(fn func(event.Event)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onEvent = append(e.onEvent, fn)
+}
+
+// persistEvent writes the event to the store if configured, and
+// calls the onEvent hook for streaming.
 func (e *Engine) persistEvent(ctx context.Context, evt event.Event) {
-	if e.store == nil {
-		return
+	if e.store != nil {
+		if err := e.store.Append(ctx, evt); err != nil {
+			log.Printf("[eventbus] persist event %s: %v", evt.ID, err)
+		}
 	}
-	if err := e.store.Append(ctx, evt); err != nil {
-		log.Printf("[eventbus] persist event %s: %v", evt.ID, err)
+	for _, fn := range e.onEvent {
+		fn(evt)
 	}
 }
 

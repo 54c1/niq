@@ -27,7 +27,11 @@ import (
 	"strconv"
 	"time"
 
+	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
+	"github.com/54c1/niq/pkg/service/eventbus"
 	"github.com/54c1/niq/pkg/worker/hiw"
+
+	"github.com/54c1/niq/core/event"
 )
 
 //go:embed assets/dist/*
@@ -35,9 +39,11 @@ var embeddedAssets embed.FS
 
 // Server is the WebUI HTTP server.
 type Server struct {
-	hiw     hiw.WebUI
-	server  *http.Server
-	devMode bool // when true, static assets are proxied to Vite dev server
+	hiw       hiw.WebUI
+	server    *http.Server
+	devMode   bool // when true, static assets are proxied to Vite dev server
+	eventLog  *eventbusapi.EventLog
+	engine    *eventbus.Engine
 }
 
 // New creates a WebUI Server that wraps the given HIW.
@@ -87,7 +93,13 @@ func New(h hiw.WebUI, addr string, devMode bool) *Server {
 	return s
 }
 
-// Start begins serving HTTP. Blocks until ctx is cancelled.
+// SetEventLog wires the bus event stream (EventLog via Engine.OnEvent) into
+// the WebUI so its SSE endpoint receives ALL events — including tool call
+// events sent via Send — not just what HIW's bus channel sees.
+func (s *Server) SetEventLog(el *eventbusapi.EventLog, engine *eventbus.Engine) {
+	s.eventLog = el
+	s.engine = engine
+}
 func (s *Server) Start(ctx context.Context) error {
 	log.Printf("[webui] listening on %s", s.server.Addr)
 
@@ -118,12 +130,27 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request) {
 		TraceID:  r.URL.Query().Get("trace"),
 		Type:     r.URL.Query().Get("type"),
 	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, err := s.hiw.Follow(r.Context(), filter)
+	// Use the EventLog (hooked to Engine.OnEvent) when available — it receives
+	// ALL events (both Send and Broadcast), so tool call events will appear in
+	// the real-time stream. Fall back to HIW's Follow for backward compatibility.
+	var ch <-chan event.Event
+	var err error
+	if s.eventLog != nil {
+		busFilter := eventbusapi.Filter{
+			WorkerID: filter.WorkerID,
+			TraceID:  filter.TraceID,
+			Type:     filter.Type,
+		}
+		ch, err = s.eventLog.Follow(r.Context(), busFilter, limit)
+	} else {
+		ch, err = s.hiw.Follow(r.Context(), filter)
+	}
 	if err != nil {
 		log.Printf("[webui] follow error: %v", err)
 		return
