@@ -143,8 +143,20 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
-	workers := s.engine.OnlineWorkers()
-	json.NewEncoder(w).Encode(workers)
+	ids := s.engine.OnlineWorkers()
+	type workerInfo struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	infos := make([]workerInfo, 0, len(ids))
+	for _, id := range ids {
+		typ := ""
+		if identity, ok := s.engine.Lookup(id); ok {
+			typ = identity.Type
+		}
+		infos = append(infos, workerInfo{ID: id, Type: typ})
+	}
+	json.NewEncoder(w).Encode(infos)
 }
 
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {

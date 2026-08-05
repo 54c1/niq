@@ -51,6 +51,7 @@ func clientFor(ctx BuildContext, cfg WorkerConfig) (corebus.WorkerSideChannel, e
 
 	if err := ctx.Registry.Register(corebus.Identity{
 		WorkerID:       cfg.ID,
+		Type:           cfg.Type,
 		PublishAllow:   pubAllow,
 		SubscribeAllow: subAllow,
 	}); err != nil {

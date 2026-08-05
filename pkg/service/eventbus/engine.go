@@ -178,6 +178,11 @@ func (e *Engine) OnlineWorkers() []string {
 	return ids
 }
 
+// Lookup returns the identity for a worker ID, or false if not found.
+func (e *Engine) Lookup(workerID string) (corebus.Identity, bool) {
+	return e.registry.Lookup(workerID)
+}
+
 // patternMatchesAny reports whether the event type matches any of the patterns.
 // Supports exact match, "*", and "Prefix.*" wildcards.
 func patternMatchesAny(eventType string, patterns []string) bool {

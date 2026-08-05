@@ -23,6 +23,10 @@ type Identity struct {
 	// WorkerID is the unique identifier for this worker.
 	WorkerID string
 
+	// Type is the worker type label (e.g. "reason", "workspace", "hiw", "timer").
+	// Populated at registration time by the swarm assembly.
+	Type string
+
 	// Credential is used to authenticate the worker at connect time.
 	// The credential scheme is transport-specific (e.g., token, API key,
 	// peer credential for loopback).
