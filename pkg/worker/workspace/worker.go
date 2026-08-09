@@ -46,7 +46,7 @@ func New(cfg Config) *WorkspaceWorker {
 		event.NewPattern("worker.discover"),
 	}
 	return &WorkspaceWorker{
-		BaseWorker: worker.NewBaseWorkerV2(cfg.ID, subs, cfg.Bus),
+		BaseWorker: worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
 		backend:    cfg.Backend,
 		mode:       cfg.Mode,
 	}

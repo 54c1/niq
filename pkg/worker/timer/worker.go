@@ -34,7 +34,7 @@ func New(cfg Config) *Worker {
 		id = "timer"
 	}
 	return &Worker{
-		BaseWorker: worker.NewBaseWorkerV2(id, []event.EventPattern{
+		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),

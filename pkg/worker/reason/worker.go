@@ -97,7 +97,7 @@ func NewWorker(cfg Config) *Worker {
 	// Worker is handled at runtime through program.load tool calls.
 
 	w := &Worker{
-		BaseWorker:      worker.NewBaseWorkerV2(cfg.ID, subs, cfg.Bus),
+		BaseWorker:      worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
 		llmProvider:     cfg.Provider,
 		callTracker:     NewToolCallTracker(cfg.Bus),
 		eventConverter:  cfg.Handlers,

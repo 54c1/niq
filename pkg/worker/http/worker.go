@@ -51,7 +51,7 @@ func New(cfg Config) *Worker {
 		c = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &Worker{
-		BaseWorker: worker.NewBaseWorkerV2(id, []event.EventPattern{
+		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),

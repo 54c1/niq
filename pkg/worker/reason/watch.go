@@ -10,10 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
-	svcbus "github.com/54c1/niq/pkg/service/bus"
 )
 
 // watch is the single event loop goroutine. It blocks on busCh waiting
@@ -192,10 +192,25 @@ func (w *Worker) handleInput(evt event.Event) {
 	}
 }
 
+// typeMatches reports whether an event type matches a subscription pattern.
+// Supports exact match, "*" (any), and "Prefix.*" prefix wildcards.
+func typeMatches(pattern, eventType string) bool {
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	if pattern == eventType {
+		return true
+	}
+	if prefix, ok := strings.CutSuffix(pattern, ".*"); ok {
+		return eventType == prefix || strings.HasPrefix(eventType, prefix+".")
+	}
+	return false
+}
+
 // convertEvent routes an event through the registered EventConverters.
 func (w *Worker) convertEvent(evt event.Event) []llm.Message {
 	for _, h := range w.eventConverter {
-		if svcbus.TypeMatches(h.Pattern.Type, evt.Type) && (h.Pattern.SourceID == "" || h.Pattern.SourceID == evt.WorkerId) {
+		if typeMatches(h.Pattern.Type, evt.Type) && (h.Pattern.SourceID == "" || h.Pattern.SourceID == evt.WorkerId) {
 			return h.Converter(evt)
 		}
 	}
