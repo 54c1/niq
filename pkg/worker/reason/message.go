@@ -86,15 +86,15 @@ func DefaultConverter(evt event.Event) []llm.Message {
 
 // parkReason returns the explanatory text shown in the [pending] placeholder
 // when a call is parked, describing why the reasoner stopped waiting on it.
-func parkReason(cause ToolCallCause) string {
+func parkReason(cause InterruptCause) string {
 	switch cause {
-	case CauseTimeout:
+	case InterruptCauseTimeout:
 		return "Tool call timed out; reasoner proceeded without waiting"
-	case CauseInput:
+	case InterruptCauseInput:
 		return "Tool call interrupted by new input; reasoner proceeded without waiting"
-	case CauseAbort:
+	case InterruptCauseAbort:
 		return "Tool call aborted"
-	case CauseReminder:
+	case InterruptCauseReminder:
 		return "Tool call interrupted by reminder; reasoner proceeded without waiting"
 	default:
 		return "Tool call parked; reasoner proceeded"
@@ -219,13 +219,13 @@ func (w *Worker) appendLateResult(parked *ToolCall, evt event.Event) {
 	label := "Late result for tool call"
 	if parked != nil {
 		switch parked.ParkCause {
-		case CauseTimeout:
+		case InterruptCauseTimeout:
 			label = "Timed-out tool call"
-		case CauseInput:
+		case InterruptCauseInput:
 			label = "Interrupted tool call"
-		case CauseAbort:
+		case InterruptCauseAbort:
 			label = "Aborted tool call"
-		case CauseReminder:
+		case InterruptCauseReminder:
 			label = "Interrupted tool call"
 		}
 	}

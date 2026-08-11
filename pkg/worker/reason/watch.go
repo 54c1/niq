@@ -95,12 +95,12 @@ func (w *Worker) process(_ context.Context, evt event.Event) {
 // results can still be contextualized), best-effort recalls them, and records
 // the abort in the conversation transcript. The session ends (needReason=false).
 func (w *Worker) handleAbort(_ event.Event) {
-	w.interruptReason = "abort"
+	w.interruptReason = InterruptCauseAbort
 	if w.cancelReason != nil {
 		w.cancelReason()
 		w.cancelReason = nil
 	}
-	tcs := w.callTracker.parkAll(CauseAbort)
+	tcs := w.callTracker.parkAll(InterruptCauseAbort)
 	for _, rc := range tcs {
 		w.updatePlaceholderToParked(rc)
 	}
@@ -147,7 +147,7 @@ func (w *Worker) handleTimeout(evt event.Event) {
 	// Only the current round's timer is meaningful; an orphaned timer from a
 	// prior round (whose call_id no longer matches) is silently discarded.
 	if w.activeTimeout != "" && timerID == w.activeTimeout {
-		tcs := w.callTracker.parkAll(CauseTimeout)
+		tcs := w.callTracker.parkAll(InterruptCauseTimeout)
 		for _, tc := range tcs {
 			w.updatePlaceholderToParked(tc)
 		}
@@ -166,7 +166,7 @@ func (w *Worker) handleReminder(evt event.Event) {
 	}
 	msgs := w.convertEvent(evt)
 	w.messages = append(w.messages, msgs...)
-	w.setImmediateReasoning(CauseReminder)
+	w.setImmediateReasoning(InterruptCauseReminder)
 }
 
 // handleToolResult processes a tool.completed/failed/rejected event.
@@ -214,12 +214,12 @@ func (w *Worker) handleInput(evt event.Event) {
 	default:
 		// "default" or unset: respond to the user immediately. Interrupt any
 		// in-flight reasoning call, then schedule a fresh round.
-		w.interruptReason = "input"
+		w.interruptReason = InterruptCauseInput
 		if w.cancelReason != nil {
 			w.cancelReason()
 			w.cancelReason = nil
 		}
-		w.setImmediateReasoning(CauseInput)
+		w.setImmediateReasoning(InterruptCauseInput)
 	}
 }
 
@@ -240,7 +240,7 @@ func (w *Worker) handleDecisionMade(evt event.Event) {
 		Role:    llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText, Text: text}},
 	})
-	w.setImmediateReasoning(CauseInput)
+	w.setImmediateReasoning(InterruptCauseInput)
 	log.Printf("[reason %s] received human decision on \"%s\": %s", w.ID(), summary, decision)
 }
 
@@ -248,9 +248,9 @@ func (w *Worker) handleDecisionMade(evt event.Event) {
 // run at the next event loop tick, parking any in-flight (Pending) tool calls
 // with the given cause first. It mirrors Node's setImmediate — we set the flag
 // (needReason) and wait for tryReason to consume it, we do not execute the
-// reasoning ourselves. Used by user input (CauseInput) and reminders (CauseReminder).
+// reasoning ourselves. Used by user input (InterruptCauseInput) and reminders (InterruptCauseReminder).
 // The parking keeps pending tools from mixing with the new round's tracking.
-func (w *Worker) setImmediateReasoning(cause ToolCallCause) {
+func (w *Worker) setImmediateReasoning(cause InterruptCause) {
 	tcs := w.callTracker.parkAll(cause)
 	for _, rc := range tcs {
 		w.updatePlaceholderToParked(rc)

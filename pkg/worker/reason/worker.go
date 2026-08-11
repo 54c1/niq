@@ -67,9 +67,10 @@ type Worker struct {
 	cancelRun    context.CancelFunc
 
 	// interruptReason records why the current reasoning round was interrupted
-	// ("abort" or "input"). Set by the watch loop before calling cancelReason()
-	// so the reason goroutine can read it after the context is cancelled.
-	interruptReason string
+	// (InterruptCauseAbort or InterruptCauseInput). Set by the watch loop before
+	// calling cancelReason() so the reason goroutine can read it after the
+	// context is cancelled.
+	interruptReason InterruptCause
 }
 
 // NewWorker creates a Worker from the given configuration.
