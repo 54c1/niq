@@ -84,7 +84,7 @@ func (r *FileIdentityRegistry) Register(id corebus.Identity) error {
 }
 
 // Update implements corebus.IdentityRegistry.
-func (r *FileIdentityRegistry) Update(workerID string, typ string, pubAllow, subAllow []string) error {
+func (r *FileIdentityRegistry) Update(workerID string, pubAllow, subAllow []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -92,7 +92,6 @@ func (r *FileIdentityRegistry) Update(workerID string, typ string, pubAllow, sub
 	if !ok {
 		return fmt.Errorf("eventbus: identity %s not found", workerID)
 	}
-	entry.Type = typ
 	entry.PublishAllow = pubAllow
 	entry.SubscribeAllow = subAllow
 	r.identities[workerID] = entry

@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -32,10 +31,13 @@ func (w *HostWorker) handleToolCall(evt event.Event) {
 	switch toolName {
 	case "spawn":
 		result, err = w.handleSpawn(args)
-	case "list":
-		result, err = w.handleList(args)
 	case "destroy":
 		result, err = w.handleDestroy(args)
+	case "cancel":
+		// Best-effort recall acknowledgment. Spawned workers run independently;
+		// cancelling them mid-flight is not guaranteed.
+		callID, _ := args["call_id"].(string)
+		result = fmt.Sprintf("cancel requested for %s (best-effort)", callID)
 	default:
 		err = fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -73,6 +75,7 @@ func (w *HostWorker) spawnWorkspace(args map[string]any) (string, error) {
 	// Register identity.
 	if err := w.registry.Register(corebus.Identity{
 		WorkerID:       id,
+		Type:           "workspace",
 		PublishAllow:   []string{"*"},
 		SubscribeAllow: []string{"tool.requested", "worker.discover"},
 	}); err != nil {
@@ -124,6 +127,7 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 	}
 	if err := w.registry.Register(corebus.Identity{
 		WorkerID:       id,
+		Type:           "reason",
 		PublishAllow:   []string{"*"},
 		SubscribeAllow: subAllow,
 	}); err != nil {
@@ -250,14 +254,6 @@ func parseEvents(args map[string]any) []reason.EventConverter {
 	return handlers
 }
 
-func (w *HostWorker) handleList(args map[string]any) (string, error) {
-	typ, _ := args["type"].(string)
-
-	ids := w.engine.ListWorkers(typ)
-	b, _ := json.Marshal(ids)
-	return string(b), nil
-}
-
 func (w *HostWorker) handleDestroy(args map[string]any) (string, error) {
 	workerID, _ := args["worker_id"].(string)
 	if workerID == "" {
@@ -337,19 +333,6 @@ func (w *HostWorker) publishReady() {
 						},
 					},
 					"required": []any{"type"},
-				},
-			},
-			{
-				"name":        "list",
-				"description": "List active workers. Type filters to workspace or reason workers.",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"type": map[string]any{
-							"type": "string", "enum": []any{"workspace", "reason", ""},
-							"description": "Optional filter: workspace, reason, or empty for all.",
-						},
-					},
 				},
 			},
 			{

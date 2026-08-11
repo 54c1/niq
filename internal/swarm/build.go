@@ -55,9 +55,9 @@ func clientFor(ctx BuildContext, cfg WorkerConfig) (corebus.WorkerSideChannel, e
 		PublishAllow:   pubAllow,
 		SubscribeAllow: subAllow,
 	}); err != nil {
-		// If already registered from a previous run, update the allow lists and type.
+		// If already registered from a previous run, update the allow lists.
 		if strings.Contains(err.Error(), "already registered") {
-			ctx.Registry.Update(cfg.ID, cfg.Type, pubAllow, subAllow)
+			ctx.Registry.Update(cfg.ID, pubAllow, subAllow)
 		} else {
 			return nil, fmt.Errorf("swarm: register worker %q: %w", cfg.ID, err)
 		}

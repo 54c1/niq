@@ -29,30 +29,29 @@ export default function App() {
   const [view, setView] = useState<ViewMode>('talk')
   const [input, setInput] = useState('')
   const [inputMode, setInputMode] = useState('default')
+  const [sending, setSending] = useState(false)
+  const [mentionKey, setMentionKey] = useState(0)
   const [filterWorker, setFilterWorker] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [deliveries, setDeliveries] = useState<Record<string, string[]>>({})
-  const [talkPartner, setTalkPartner] = useState('')
+  const [talkWorkers, setTalkWorkers] = useState<Set<string>>(new Set())
   const [traceFilter, setTraceFilter] = useState('')
 
-  const initialSelectDone = useRef(false)
   const eventsRef = useRef<EventPayload[]>([])
   const deliveriesRef = useRef<Record<string, string[]>>({})
   const listRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
-  // ── SSE ──
-  const effectiveWorker = view === 'talk' ? '' : filterWorker
-  const sseKey = view === 'talk' ? 'talk-' + talkPartner : 'events-' + filterWorker
+  // ── SSE: always fetch all events, frontend filters ──
+  const sseKey = view === 'talk' ? 'talk-all' : 'events-' + filterWorker
 
   useEffect(() => {
     const params = new URLSearchParams()
-    if (view === 'talk' && talkPartner) {
-      params.set('worker', talkPartner)
-    } else if (view === 'events' && traceFilter) {
+    if (view === 'events' && traceFilter) {
       params.set('trace', traceFilter)
-    } else if (effectiveWorker && view !== 'talk') {
-      params.set('worker', effectiveWorker)
+    } else if (view === 'events' && filterWorker) {
+      params.set('worker', filterWorker)
     }
     const url = `/api/stream?${params}`
     setEvents([])
@@ -81,28 +80,52 @@ export default function App() {
   usePolling<WorkerInfo[]>('/api/workers', 5000, setWorkers)
   usePolling<Decision[]>('/api/decisions', 3000, setDecisions)
 
-  // ── Auto-select first reason worker ──
-  useEffect(() => {
-    if (!initialSelectDone.current && view === 'talk' && !talkPartner && workers.length > 0) {
-      const firstReason = workers.find(w => w.type === 'reason')
-      if (firstReason) {
-        setTalkPartner(firstReason.id)
-        initialSelectDone.current = true
-      }
-    }
-  }, [view, talkPartner, workers])
-
   // ── Callbacks ──
   const sendMessage = useCallback(() => {
-    if (!input.trim()) return
-    const msgTarget = view === 'talk' ? talkPartner : ''
-    sendInput(input, msgTarget, inputMode)
-    setInput('')
-  }, [input, view, talkPartner, inputMode])
+    if (!input.trim() || sending) return
+    setSending(true)
+    // Parse @mention for targeting specific worker.
+    // Format: "@worker_name message" sends to that worker.
+    let msgTarget = ''
+    let msgText = input
+    const mentionMatch = input.match(/^@(\S+)\s+(.*)$/s)
+    if (mentionMatch) {
+      const mentioned = mentionMatch[1]
+      const reasonWorkers = workers.filter(w => w.type === 'reason')
+      if (reasonWorkers.some(r => r.id === mentioned)) {
+        msgTarget = mentioned
+        msgText = mentionMatch[2]
+      }
+    }
+    if (!msgTarget) {
+      // No @mention found: target the first selected reason worker, or broadcast.
+      const reasonWorkers = workers.filter(w => w.type === 'reason')
+      const selectedReasons = [...talkWorkers].filter(id => reasonWorkers.some(r => r.id === id))
+      msgTarget = selectedReasons.length > 0 ? selectedReasons[0] : ''
+    }
+    sendInput(msgText, msgTarget, inputMode).then(() => {
+      setInput('')
+      setSending(false)
+    }).catch(() => {
+      setSending(false)
+    })
+  }, [input, view, talkWorkers, inputMode, sending, workers])
 
   const handleAbort = useCallback(() => {
-    abortWorker(talkPartner)
-  }, [talkPartner])
+    const reasonWorkers = workers.filter(w => w.type === 'reason')
+    if (reasonWorkers.length > 0) {
+      abortWorker(reasonWorkers[0].id)
+    }
+  }, [workers])
+
+  const toggleWorker = useCallback((id: string) => {
+    setTalkWorkers(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
   const toggleExpand = useCallback((id: string) => {
     setExpanded((prev) => {
@@ -133,7 +156,7 @@ export default function App() {
   const loadMore = useCallback(async () => {
     if (events.length === 0) return
     const oldestId = events[0].id
-    const worker = view === 'talk' ? talkPartner : (view === 'events' ? filterWorker : '')
+    const worker = view === 'events' ? filterWorker : ''
     const trace = view === 'events' ? traceFilter : ''
     try {
       const older = await loadEventsBefore(oldestId, 50, worker, trace)
@@ -144,7 +167,7 @@ export default function App() {
       eventsRef.current = [...prepend, ...eventsRef.current]
       setEvents(eventsRef.current)
     } catch {}
-  }, [events, view, filterWorker, traceFilter, talkPartner])
+  }, [events, view, filterWorker, traceFilter])
 
   // ── Events list auto-scroll ──
   useEffect(() => {
@@ -152,6 +175,20 @@ export default function App() {
       listRef.current.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
     }
   }, [events])
+
+  // Auto-load more events when scrolling to top.
+  useEffect(() => {
+    if (view !== 'events' || events.length === 0) return
+    const el = sentinelRef.current
+    if (!el) return
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        loadMore()
+      }
+    }, { rootMargin: '200px 0px' })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [view, events.length, loadMore])
 
   const handleScroll = useCallback(() => {
     const el = listRef.current
@@ -178,8 +215,8 @@ export default function App() {
         filterWorker={filterWorker}
         setFilterWorker={setFilterWorker}
         workers={workers}
-        talkPartner={talkPartner}
-        setTalkPartner={setTalkPartner}
+        talkWorkers={talkWorkers}
+        onToggleWorker={toggleWorker}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -187,29 +224,30 @@ export default function App() {
           <>
             <TalkView
               events={events}
-              talkPartner={talkPartner}
+              talkWorkers={talkWorkers}
               onTraceClick={handleTraceClick}
               onLoadMore={loadMore}
+              onMention={(id) => { setInput(prev => prev + '@' + id + ' '); setMentionKey(k => k + 1) }}
               deliveries={deliveries}
               decisions={decisions}
               makeDecision={makeDecision}
             />
 
-            {talkPartner && (
-              <TalkInput
-                talkPartner={talkPartner}
-                input={input}
-                inputMode={inputMode}
-                onInputChange={setInput}
-                onSend={sendMessage}
-                onAbort={handleAbort}
-                onModeChange={setInputMode}
-              />
-            )}
+            <TalkInput
+              talkPartner={''}
+              input={input}
+              inputMode={inputMode}
+              onInputChange={setInput}
+              onSend={sendMessage}
+              onAbort={handleAbort}
+              onModeChange={setInputMode}
+              workers={workers}
+              mentionKey={mentionKey}
+            />
           </>
         ) : view === 'events' ? (
           <>
-            <div style={{ marginTop: 24, marginBottom: 16, fontSize: fontSizes.md, color: colors.text, padding: '0 48px' }}>
+            <div style={{ marginTop: 40, marginBottom: 16, fontSize: fontSizes.lg, color: colors.text, padding: '0 48px' }}>
               Events
               {filterWorker && <span> <strong style={{ color: colors.textMuted }}>[{filterWorker}]</strong> sent / received</span>}
               {traceFilter && <span> — trace <strong style={{ color: colors.textMuted }}>{traceFilter}</strong></span>}
@@ -224,16 +262,7 @@ export default function App() {
             </div>
 
             <div ref={listRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', fontSize: fontSizes.md, padding: '0 48px 20px 48px' }}>
-              {events.length > 0 && (
-                <div key="load-more" style={{ textAlign: 'center', padding: '12px 0' }}>
-                  <span
-                    onClick={loadMore}
-                    style={{ cursor: 'pointer', fontSize: fontSizes.sm, color: colors.textDim, textDecoration: 'underline', textDecorationStyle: 'dotted' }}
-                  >
-                    load earlier events
-                  </span>
-                </div>
-              )}
+              {events.length > 0 && <div ref={sentinelRef} style={{ height: 1 }} />}
               {events.map((evt) => (
                 <EventRow key={evt.id} evt={evt} expanded={expanded.has(evt.id)} onToggle={() => toggleExpand(evt.id)} deliveries={deliveries} workerTypes={workerTypes} />
               ))}

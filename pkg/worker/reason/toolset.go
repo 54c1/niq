@@ -1,8 +1,10 @@
-// toolset.go — capability discovery and tool aggregation.
+// worker presence tracking and tool aggregation.
 //
-//	handleCapability: process worker.ready/gone events, update tools map
-//	allTools: return all known tools (discovered + built-in)
-//	handleToolRequest: process tool.requested for built-in tools
+// handleWorkerReady / handleWorkerGone: learn/forget a worker's tools & events
+// allTools: return all known tools (discovered + built-in)
+// handleToolRequest: process tool.requested for built-in tools
+// toolDefs / sanitize: build LLM tool definitions (dot → underscore names)
+// publishToolRequests: send tool.requested to target workers
 package reason
 
 import (
@@ -10,8 +12,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/54c1/niq/core/event"
+	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
 )
 
@@ -60,60 +64,57 @@ func (w *Worker) initBuiltinTools() {
 	}
 }
 
-// isCapabilityEvent reports whether the event type is a capability
-// discovery lifecycle event.
-func isCapabilityEvent(typ string) bool {
-	return typ == "worker.ready" || typ == "worker.gone"
-}
-
-func (w *Worker) handleCapability(evt event.Event) {
+// handleWorkerReady learns a worker's tools and published events from its
+// worker.ready announcement, updating the known tool set and publishes map.
+func (w *Worker) handleWorkerReady(evt event.Event) {
 	workerID, _ := evt.Payload["worker_id"].(string)
 
-	switch evt.Type {
-	case "worker.ready":
-		// Parse tools.
-		b, err := json.Marshal(evt.Payload["tools"])
-		if err == nil {
-			var toolsRaw []map[string]any
-			if err := json.Unmarshal(b, &toolsRaw); err == nil {
-				for _, m := range toolsRaw {
-					name, _ := m["name"].(string)
-					desc, _ := m["description"].(string)
-					params, _ := m["parameters"].(map[string]any)
-					if name == "" {
-						continue
-					}
-					prefixed := workerID + "." + name
-					w.tools[prefixed] = worker.Tool{
-						Name:        prefixed,
-						Description: desc,
-						Parameters:  params,
-						Provider:    workerID,
-					}
+	// Parse tools.
+	b, err := json.Marshal(evt.Payload["tools"])
+	if err == nil {
+		var toolsRaw []map[string]any
+		if err := json.Unmarshal(b, &toolsRaw); err == nil {
+			for _, m := range toolsRaw {
+				name, _ := m["name"].(string)
+				desc, _ := m["description"].(string)
+				params, _ := m["parameters"].(map[string]any)
+				if name == "" {
+					continue
 				}
-				log.Printf("[reason %s] received %d tool(s) from %s", w.ID(), len(toolsRaw), workerID)
+				prefixed := workerID + "." + name
+				w.tools[prefixed] = worker.Tool{
+					Name:        prefixed,
+					Description: desc,
+					Parameters:  params,
+					Provider:    workerID,
+				}
 			}
+			log.Printf("[reason %s] received %d tool(s) from %s", w.ID(), len(toolsRaw), workerID)
 		}
-
-		// Parse publishes.
-		b, err = json.Marshal(evt.Payload["publishes"])
-		if err == nil {
-			var eventsRaw []EventPublish
-			if err := json.Unmarshal(b, &eventsRaw); err == nil && len(eventsRaw) > 0 {
-				w.publishes[workerID] = eventsRaw
-				log.Printf("[reason %s] received %d event(s) from %s", w.ID(), len(eventsRaw), workerID)
-			}
-		}
-
-	case "worker.gone":
-		for name, tool := range w.tools {
-			if tool.Provider == workerID {
-				delete(w.tools, name)
-			}
-		}
-		delete(w.publishes, workerID)
-		log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 	}
+
+	// Parse publishes.
+	b, err = json.Marshal(evt.Payload["publishes"])
+	if err == nil {
+		var eventsRaw []EventPublish
+		if err := json.Unmarshal(b, &eventsRaw); err == nil && len(eventsRaw) > 0 {
+			w.publishes[workerID] = eventsRaw
+			log.Printf("[reason %s] received %d event(s) from %s", w.ID(), len(eventsRaw), workerID)
+		}
+	}
+}
+
+// handleWorkerGone forgets a departed worker's tools and published events.
+func (w *Worker) handleWorkerGone(evt event.Event) {
+	workerID, _ := evt.Payload["worker_id"].(string)
+
+	for name, tool := range w.tools {
+		if tool.Provider == workerID {
+			delete(w.tools, name)
+		}
+	}
+	delete(w.publishes, workerID)
+	log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 }
 
 // handleToolRequest processes tool.requested events targeting this worker.
@@ -230,4 +231,54 @@ func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
 	})
 	evt.TraceID = w.currentTraceID
 	_ = w.Channel.Send(context.Background(), evt, callerID)
+}
+
+// toolDefs builds the LLM tool definitions from the known tools, rebuilding the
+// sanitized-name mapping (dot → underscore) so tool calls can be desanitized.
+func toolDefs(w *Worker, tools []worker.Tool) []llm.ToolDef {
+	// Rebuild the sanitized-name mapping.
+	w.toolNameMap = make(map[string]string, len(tools))
+
+	out := make([]llm.ToolDef, len(tools))
+	for i, t := range tools {
+		sane := sanitizeToolName(t.Name)
+		w.toolNameMap[sane] = t.Name
+		out[i] = llm.ToolDef{
+			Name:        sane,
+			Description: t.Description,
+			Parameters:  t.Parameters,
+		}
+	}
+	return out
+}
+
+func sanitizeToolName(name string) string {
+	return strings.ReplaceAll(name, ".", "_")
+}
+
+func desanitizeToolName(w *Worker, sane string) string {
+	if orig, ok := w.toolNameMap[sane]; ok {
+		return orig
+	}
+	return sane
+}
+
+// publishToolRequests sends a directed tool.requested event for each tool call
+// to its target worker. The tracker only manages the pending map; the caller
+// is responsible for delivering the requests to the bus.
+func (w *Worker) publishToolRequests(target, callerID string, calls []llm.ContentBlock, traceID string) {
+	for _, tc := range calls {
+		var argsMap map[string]any
+		if tc.ToolArguments != "" {
+			json.Unmarshal([]byte(tc.ToolArguments), &argsMap)
+		}
+		evt := event.New("tool.requested", callerID, map[string]any{
+			"worker_id": callerID,
+			"call_id":   tc.ToolCallID,
+			"name":      tc.ToolName,
+			"arguments": argsMap,
+		})
+		evt.TraceID = traceID
+		_ = w.Channel.Send(context.Background(), evt, target)
+	}
 }

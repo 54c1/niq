@@ -5,6 +5,7 @@ export interface EventPayload {
   target_worker_id: string
   timestamp: number
   trace_id: string
+  recipients?: string[]
   payload: Record<string, any>
 }
 

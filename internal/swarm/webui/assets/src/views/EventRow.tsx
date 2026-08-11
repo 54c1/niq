@@ -50,7 +50,7 @@ export default function EventRow({
         : ""
     : ""
 
-  const recipients = deliveries[evt.id]
+  const recipients = deliveries[evt.id] || evt.recipients
 
   const inputBlockStyle = evt.type === "worker.input"
     ? { background: colors.accentBg, border: "1px solid " + colors.accentBorder, color: colors.text }

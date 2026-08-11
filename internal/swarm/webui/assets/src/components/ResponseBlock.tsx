@@ -23,7 +23,7 @@ export default function ResponseBlock({ evt, quotedText, quotedWorker }: Respons
           marginBottom: 12,
           background: colors.bgLight,
           border: '1px solid ' + colors.border,
-          borderRadius: 8,
+          borderRadius: '0 8px 8px 8px',
           padding: '12px 16px',
           fontSize: fontSizes.md,
           lineHeight: 1.6,
@@ -44,7 +44,7 @@ export default function ResponseBlock({ evt, quotedText, quotedWorker }: Respons
         style={{
           background: colors.bgLight,
           border: '1px solid ' + colors.border,
-          borderRadius: 8,
+          borderRadius: '0 8px 8px 8px',
           padding: '8px 14px',
           fontSize: fontSizes.sm,
           lineHeight: 1.5,
@@ -78,7 +78,7 @@ export default function ResponseBlock({ evt, quotedText, quotedWorker }: Respons
         style={{
           background: colors.bgLight,
           border: '1px solid ' + colors.border,
-          borderRadius: 8,
+          borderRadius: '0 8px 8px 8px',
           padding: '12px 16px',
           fontSize: fontSizes.md,
           lineHeight: 1.6,

@@ -41,9 +41,9 @@ type Worker struct {
 	callTracker    *ToolCallTracker
 	eventConverter []EventConverter
 
-	programs    []program.Program      // loaded programs
-	tools       map[string]worker.Tool // tools from the bus (worker.ready events)
-	publishes   map[string][]EventPublish // events published by each worker (provider → events)
+	programs  []program.Program         // loaded programs
+	tools     map[string]worker.Tool    // tools from the bus (worker.ready events)
+	publishes map[string][]EventPublish // events published by each worker (provider → events)
 	// Tool name sanity: maps sanitized name → original name.
 	// LLM API rejects names containing dots; we replace '.' with '_' before
 	// sending and map back when tool calls return.
@@ -56,14 +56,12 @@ type Worker struct {
 	// so that the frontend can correlate them into a single conversation turn.
 	currentTraceID string
 
-	mu               sync.Mutex
-	started          bool
-	needReason       bool
-	isReasoning      bool
-	reasonEpoch      int            // incremented per reason(); used with activeTickafters to discard stale timers
-	activeTickafters map[string]int // timeout timerID → epoch (cancellable)
-	elapseTickafters map[string]int // reminder timerID → epoch (never cancelled)
-	messages         []llm.Message
+	mu            sync.Mutex
+	started       bool
+	needReason    bool
+	isReasoning   bool
+	activeTimeout string // current round's set_tool_timeout call_id, "" if none
+	messages      []llm.Message
 
 	cancelReason context.CancelFunc
 	cancelRun    context.CancelFunc
@@ -71,8 +69,8 @@ type Worker struct {
 
 // NewWorker creates a Worker from the given configuration.
 func NewWorker(cfg Config) *Worker {
-	// Built-in subscriptions (tool results, capability discovery, etc.)
-	// come with their own handlers.
+	// Built-in subscriptions (tool results, worker presence, etc.) come with
+	// their own handlers.
 	// Users can add custom patterns and converters via cfg.Handlers.
 	subs := make([]event.EventPattern, 0, len(cfg.Handlers)+5)
 	for _, h := range cfg.Handlers {
@@ -99,7 +97,7 @@ func NewWorker(cfg Config) *Worker {
 	w := &Worker{
 		BaseWorker:      worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
 		llmProvider:     cfg.Provider,
-		callTracker:     NewToolCallTracker(cfg.Bus),
+		callTracker:     NewToolCallTracker(),
 		eventConverter:  cfg.Handlers,
 		tools:           make(map[string]worker.Tool),
 		publishes:       make(map[string][]EventPublish),

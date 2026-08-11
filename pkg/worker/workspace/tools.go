@@ -143,6 +143,14 @@ func (w *WorkspaceWorker) buildHandlers() {
 		}
 	}
 
+	// cancel acknowledges a best-effort recall from the reason worker on abort.
+	// Workspace tools run synchronously and cannot be forcibly interrupted, so
+	// this acknowledges receipt. In-flight results may still arrive as late results.
+	m["cancel"] = func(ctx context.Context, args map[string]any) (string, error) {
+		callID, _ := args["call_id"].(string)
+		return fmt.Sprintf("cancel requested for %s (best-effort)", callID), nil
+	}
+
 	w.handlers = m
 }
 

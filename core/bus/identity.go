@@ -50,9 +50,9 @@ type IdentityRegistry interface {
 	// worker ID is already registered.
 	Register(id Identity) error
 
-	// Update replaces the allow lists and type for an existing identity.
+	// Update replaces the allow lists for an existing identity.
 	// Returns an error if the identity is not found.
-	Update(workerID string, typ string, pubAllow, subAllow []string) error
+	Update(workerID string, pubAllow, subAllow []string) error
 
 	// Revoke removes an identity. Returns an error if not found.
 	// Future connection attempts with this worker ID will fail

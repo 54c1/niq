@@ -1,4 +1,4 @@
-// template.go — system prompt template.
+// system prompt template.
 //
 // The system prompt is built from a fixed template and the worker's loaded
 // Programs. Instruction Programs contribute their full content; Playbook

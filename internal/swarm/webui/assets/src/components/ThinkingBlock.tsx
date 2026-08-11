@@ -30,7 +30,7 @@ export default function ThinkingBlock({ evt, defaultExpanded = true, compact = f
         borderRight: tBorder,
         borderBottom: tBorder,
         borderLeft: tBorder,
-        borderRadius: tRadius,
+        borderRadius: '0 ' + tRadius + 'px ' + tRadius + 'px ' + tRadius + 'px',
         padding: tPad,
         fontSize: tFontSize,
         lineHeight: 1.5,

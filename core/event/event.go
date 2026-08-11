@@ -22,10 +22,6 @@ type EventPattern struct {
 	// Type is the event type to match.
 	// Supports exact match, "*" (any), and "Prefix.*" (prefix) wildcards.
 	Type string
-
-	// SourceID is an optional source worker ID filter.
-	// When non-empty, only events from the specified worker are matched.
-	SourceID string
 }
 
 // NewPattern is a convenience constructor for the common single-type case.

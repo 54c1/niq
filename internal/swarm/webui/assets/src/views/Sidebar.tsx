@@ -9,17 +9,17 @@ interface SidebarProps {
   filterWorker: string
   setFilterWorker: (id: string) => void
   workers: WorkerInfo[]
-  talkPartner: string
-  setTalkPartner: (id: string) => void
+  talkWorkers: Set<string>
+  onToggleWorker: (id: string) => void
 }
 
-export default function Sidebar({ view, setView, decisions, filterWorker, setFilterWorker, workers, talkPartner, setTalkPartner }: SidebarProps) {
+export default function Sidebar({ view, setView, decisions, filterWorker, setFilterWorker, workers, talkWorkers, onToggleWorker }: SidebarProps) {
   const [rotation, setRotation] = useState(0)
   const { dark, toggle, colors } = useTheme()
 
   const handleWorkerClick = (id: string) => {
     if (view === 'talk') {
-      setTalkPartner(talkPartner === id ? '' : id)
+      onToggleWorker(id)
     } else {
       setFilterWorker(filterWorker === id ? '' : id)
     }
@@ -69,13 +69,13 @@ export default function Sidebar({ view, setView, decisions, filterWorker, setFil
       {/* Worker list */}
       <strong style={{ marginBottom: 10, color: colors.text, fontSize: fontSizes.xl }}>Workers</strong>
       {view === 'talk' && (
-        <div style={{ fontSize: fontSizes.md, lineHeight: '20px', color: colors.textDimmed, marginBottom: 8, fontStyle: 'italic' }}>
-          Select a reason worker to talk with
+        <div style={{ fontSize: fontSizes.sm, lineHeight: '20px', color: colors.textDimmed, marginBottom: 8, fontStyle: 'italic' }}>
+          Select workers to view their events. Messages are sent to the first selected reason worker.
         </div>
       )}
       {workers.filter(w => view !== 'talk' || w.type === 'reason').map((w) => {
         const isActive = view === 'talk'
-          ? talkPartner === w.id
+          ? talkWorkers.has(w.id)
           : filterWorker === w.id
         return (
           <div
@@ -83,6 +83,7 @@ export default function Sidebar({ view, setView, decisions, filterWorker, setFil
             style={{ cursor: 'pointer', color: isActive ? colors.accent : colors.textDim, fontSize: fontSizes.md }}
             onClick={() => handleWorkerClick(w.id)}
           >
+            {isActive ? '\u2611 ' : '\u2610 '}
             {w.id}
             {w.type ? (
               <span
@@ -94,7 +95,6 @@ export default function Sidebar({ view, setView, decisions, filterWorker, setFil
                 {': ' + w.type}
               </span>
             ) : ''}
-            {isActive ? ' \u25C9' : ''}
           </div>
         )
       })}
