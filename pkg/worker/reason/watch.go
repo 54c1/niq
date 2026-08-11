@@ -3,7 +3,8 @@
 // watch: single goroutine, blocks on busCh, calls process + tryReason
 // process: routes events through abort/timer/worker-presence/tool_result/input
 // tryReason: decision gate — spawns reason() on its own goroutine when
-//            needReason && !isReasoning, keeping the event loop responsive.
+//
+//	needReason && !isReasoning, keeping the event loop responsive.
 package reason
 
 import (
@@ -94,6 +95,7 @@ func (w *Worker) process(_ context.Context, evt event.Event) {
 // results can still be contextualized), best-effort recalls them, and records
 // the abort in the conversation transcript. The session ends (needReason=false).
 func (w *Worker) handleAbort(_ event.Event) {
+	w.interruptReason = "abort"
 	if w.cancelReason != nil {
 		w.cancelReason()
 		w.cancelReason = nil
@@ -212,6 +214,7 @@ func (w *Worker) handleInput(evt event.Event) {
 	default:
 		// "default" or unset: respond to the user immediately. Interrupt any
 		// in-flight reasoning call, then schedule a fresh round.
+		w.interruptReason = "input"
 		if w.cancelReason != nil {
 			w.cancelReason()
 			w.cancelReason = nil

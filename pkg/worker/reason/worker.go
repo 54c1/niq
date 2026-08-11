@@ -65,6 +65,11 @@ type Worker struct {
 
 	cancelReason context.CancelFunc
 	cancelRun    context.CancelFunc
+
+	// interruptReason records why the current reasoning round was interrupted
+	// ("abort" or "input"). Set by the watch loop before calling cancelReason()
+	// so the reason goroutine can read it after the context is cancelled.
+	interruptReason string
 }
 
 // NewWorker creates a Worker from the given configuration.
@@ -134,6 +139,7 @@ func (w *Worker) Start(ctx context.Context) error {
 		"publishes": []map[string]any{
 			{"type": "reason.response", "description": "Reasoning result text response"},
 			{"type": "reason.thinking", "description": "Reasoning thinking process"},
+			{"type": "reason.interrupted", "description": "Reasoning interrupted (abort/input) with preserved content"},
 			{"type": "reason.start", "description": "Reasoning round started"},
 			{"type": "reason.end", "description": "Reasoning round ended"},
 		},
@@ -157,6 +163,7 @@ func (w *Worker) publishReady() {
 		"publishes": []map[string]any{
 			{"type": "reason.response", "description": "Reasoning result text response"},
 			{"type": "reason.thinking", "description": "Reasoning thinking process"},
+			{"type": "reason.interrupted", "description": "Reasoning interrupted (abort/input) with preserved content"},
 			{"type": "reason.start", "description": "Reasoning round started"},
 			{"type": "reason.end", "description": "Reasoning round ended"},
 		},
