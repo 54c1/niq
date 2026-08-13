@@ -27,6 +27,8 @@ type WorkerConfig struct {
 	ID            string   `yaml:"id"`
 	Instruction   string   `yaml:"instruction,omitempty"`
 	Provider      string   `yaml:"provider,omitempty"`
+	APIKey        string   `yaml:"api_key,omitempty"`
+	BaseURL       string   `yaml:"base_url,omitempty"`
 	Model         string   `yaml:"model,omitempty"`
 	Subscriptions []string `yaml:"subscriptions,omitempty"`
 	Publish       []string `yaml:"publish,omitempty"`

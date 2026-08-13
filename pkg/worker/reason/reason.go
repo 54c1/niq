@@ -14,7 +14,6 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	llm "github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/helper"
 )
 
 func (w *Worker) reason(ctx context.Context) {
@@ -97,7 +96,7 @@ func (w *Worker) prepareReasoning() (traceID string, req *llm.CompletionRequest)
 // openStream starts the LLM stream, retrying on transient errors.
 func (w *Worker) openStream(reasonCtx context.Context, req *llm.CompletionRequest) (*llm.EventStream, error) {
 	var stream *llm.EventStream
-	err := helper.Retry(reasonCtx, 5, func() (bool, error) {
+	err := retry(reasonCtx, 5, func() (bool, error) {
 		s, callErr := w.llmProvider.CompleteStream(reasonCtx, req)
 		if callErr == nil {
 			stream = s
@@ -110,6 +109,28 @@ func (w *Worker) openStream(reasonCtx context.Context, req *llm.CompletionReques
 		return llmErr.Type == llm.ErrorRateLimit || llmErr.Type == llm.ErrorTimeout, callErr
 	})
 	return stream, err
+}
+
+// retry executes fn up to maxRetries times with exponential backoff.
+// fn returns (shouldRetry, error). If shouldRetry is true and error is
+// non-nil, retries after backoff. Otherwise stops immediately.
+func retry(ctx context.Context, maxRetries int, fn func() (bool, error)) error {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		shouldRetry, err := fn()
+		if err == nil {
+			return nil
+		}
+		if !shouldRetry || attempt == maxRetries {
+			return err
+		}
+		backoff := time.Duration(1<<uint(attempt)) * time.Second
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // streamOutcome summarizes the result of consuming an LLM stream.

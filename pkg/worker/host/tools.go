@@ -3,16 +3,16 @@ package host
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	corebus "github.com/54c1/niq/core/bus"
 	"github.com/54c1/niq/core/event"
+	"github.com/54c1/niq/core/llm"
 	programpkg "github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/ext/service/wsbackend"
 	"github.com/54c1/niq/ext/worker/workspace"
-	"github.com/54c1/niq/pkg/helper/openai"
+	"github.com/54c1/niq/pkg/providercfg"
 	inprocess "github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/worker/reason"
 )
@@ -108,6 +108,11 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 		return "", fmt.Errorf("id is required")
 	}
 
+	provider, _ := args["provider"].(string)
+	apiKey, _ := args["api_key"].(string)
+	baseURL, _ := args["base_url"].(string)
+	model, _ := args["model"].(string)
+
 	// Parse programs from args.
 	programs := parsePrograms(args, id)
 
@@ -140,12 +145,8 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 	var err error
 	err = w.engine.CreateWorker(id, "reason", func() worker.ManagedWorker {
 		return reason.NewWorker(reason.Config{
-			ID: id,
-			Provider: openai.New(openai.Config{
-				APIKey:  os.Getenv("OPENAI_API_KEY"),
-				BaseURL: "https://api.deepseek.com/v1",
-				Model:   "deepseek-v4-flash",
-			}),
+			ID:              id,
+			Provider:        providerFromArgs(provider, apiKey, baseURL, model),
 			Programs:        programs,
 			EventConverters: events,
 			Bus:             childCh,
@@ -158,6 +159,34 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(`{"worker_id":"%s","status":"created"}`, id), nil
+}
+
+func providerFromArgs(provider, apiKey, baseURL, model string) llm.LLMProvider {
+	if provider != "" {
+		if p, ok := providercfg.Find(provider); ok {
+			return providercfg.BuildWithOverrides(p, apiKey, baseURL, model)
+		}
+		if p, ok := providercfg.FindByType(provider); ok {
+			return providercfg.BuildWithOverrides(p, apiKey, baseURL, model)
+		}
+		return providercfg.Build(providercfg.Provider{
+			Type:    provider,
+			APIKey:  apiKey,
+			BaseURL: baseURL,
+			Model:   model,
+		})
+	}
+
+	if p, ok := providercfg.Default(); ok {
+		return providercfg.BuildWithOverrides(p, apiKey, baseURL, model)
+	}
+
+	return providercfg.Build(providercfg.Provider{
+		Type:    "deepseek",
+		APIKey:  apiKey,
+		BaseURL: baseURL,
+		Model:   model,
+	})
 }
 
 // parsePrograms extracts a simplified program list from spawn args.

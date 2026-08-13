@@ -16,7 +16,7 @@ import (
 	"github.com/54c1/niq/ext/service/pgbackend"
 	"github.com/54c1/niq/ext/service/wsbackend"
 	"github.com/54c1/niq/ext/worker/workspace"
-	"github.com/54c1/niq/pkg/helper/openai"
+	"github.com/54c1/niq/pkg/providercfg"
 	"github.com/54c1/niq/pkg/service/eventbus"
 	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
@@ -246,20 +246,29 @@ func buildProgram(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, err
 // ── helpers ──
 
 func resolveProvider(cfg WorkerConfig) llm.LLMProvider {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	baseURL := "https://api.openai.com/v1"
-	model := "gpt-4o"
-
-	if cfg.Provider == "deepseek" || cfg.Provider == "openai-compatible" {
-		baseURL = "https://api.deepseek.com/v1"
+	if cfg.Provider != "" {
+		if p, ok := providercfg.Find(cfg.Provider); ok {
+			return providercfg.BuildWithOverrides(p, cfg.APIKey, cfg.BaseURL, cfg.Model)
+		}
+		if p, ok := providercfg.FindByType(cfg.Provider); ok {
+			return providercfg.BuildWithOverrides(p, cfg.APIKey, cfg.BaseURL, cfg.Model)
+		}
+		return providercfg.Build(providercfg.Provider{
+			Type:    cfg.Provider,
+			APIKey:  cfg.APIKey,
+			BaseURL: cfg.BaseURL,
+			Model:   cfg.Model,
+		})
 	}
-	if cfg.Model != "" {
-		model = cfg.Model
+
+	if p, ok := providercfg.Default(); ok {
+		return providercfg.BuildWithOverrides(p, cfg.APIKey, cfg.BaseURL, cfg.Model)
 	}
 
-	return openai.New(openai.Config{
-		APIKey:  apiKey,
-		BaseURL: baseURL,
-		Model:   model,
+	return providercfg.Build(providercfg.Provider{
+		Type:    "openai",
+		APIKey:  cfg.APIKey,
+		BaseURL: cfg.BaseURL,
+		Model:   cfg.Model,
 	})
 }
