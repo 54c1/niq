@@ -2,14 +2,13 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import Sidebar from './views/Sidebar'
 import EventRow from './views/EventRow'
 import TalkView from './views/TalkView'
-import Decisions from './views/Decisions'
 import TalkInput from './components/TalkInput'
 import { useTheme, fontSizes } from './theme'
 import { usePolling } from './hooks/usePolling'
-import { sendInput, abortWorker, makeDecision as apiMakeDecision, fetchWorkers, fetchDecisions, loadEventsBefore } from './services/api'
-import type { EventPayload, Decision, WorkerInfo } from './types'
+import { sendInput, abortWorker, fetchWorkers, loadEventsBefore } from './services/api'
+import type { EventPayload, WorkerInfo } from './types'
 
-type ViewMode = 'talk' | 'events' | 'decisions'
+type ViewMode = 'talk' | 'events'
 
 export default function App() {
   const { dark, colors } = useTheme()
@@ -25,7 +24,6 @@ export default function App() {
   // ── State ──
   const [events, setEvents] = useState<EventPayload[]>([])
   const [workers, setWorkers] = useState<WorkerInfo[]>([])
-  const [decisions, setDecisions] = useState<Decision[]>([])
   const [view, setView] = useState<ViewMode>('talk')
   const [input, setInput] = useState('')
   const [inputMode, setInputMode] = useState('default')
@@ -78,7 +76,6 @@ export default function App() {
 
   // ── Polling ──
   usePolling<WorkerInfo[]>('/api/workers', 5000, setWorkers)
-  usePolling<Decision[]>('/api/decisions', 3000, setDecisions)
 
   // ── Callbacks ──
   const sendMessage = useCallback(() => {
@@ -135,13 +132,6 @@ export default function App() {
       return next
     })
   }, [])
-
-  const makeDecision = useCallback(
-    (reqID: string, decision: string) => {
-      apiMakeDecision(reqID, decision)
-    },
-    [],
-  )
 
   const handleTraceClick = useCallback((traceId: string) => {
     setTraceFilter(traceId)
@@ -211,7 +201,6 @@ export default function App() {
       <Sidebar
         view={view}
         setView={setView}
-        decisions={decisions}
         filterWorker={filterWorker}
         setFilterWorker={setFilterWorker}
         workers={workers}
@@ -229,8 +218,6 @@ export default function App() {
               onLoadMore={loadMore}
               onMention={(id) => { setInput(prev => prev + '@' + id + ' '); setMentionKey(k => k + 1) }}
               deliveries={deliveries}
-              decisions={decisions}
-              makeDecision={makeDecision}
             />
 
             <TalkInput
@@ -245,7 +232,7 @@ export default function App() {
               mentionKey={mentionKey}
             />
           </>
-        ) : view === 'events' ? (
+        ) : (
           <>
             <div style={{ marginTop: 40, marginBottom: 16, fontSize: fontSizes.lg, color: colors.text, padding: '0 48px' }}>
               Events
@@ -268,10 +255,6 @@ export default function App() {
               ))}
             </div>
           </>
-        ) : (
-          <div style={{ flex: 1, overflowY: 'auto', padding: 30 }}>
-            <Decisions decisions={decisions} makeDecision={makeDecision} />
-          </div>
         )}
       </div>
     </div>

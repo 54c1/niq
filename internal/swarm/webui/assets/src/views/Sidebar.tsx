@@ -3,9 +3,8 @@ import { useTheme, fontSizes } from '../theme'
 import { type WorkerInfo } from '../types'
 
 interface SidebarProps {
-  view: 'talk' | 'events' | 'decisions'
-  setView: (v: 'talk' | 'events' | 'decisions') => void
-  decisions: { length: number }
+  view: 'talk' | 'events'
+  setView: (v: 'talk' | 'events') => void
   filterWorker: string
   setFilterWorker: (id: string) => void
   workers: WorkerInfo[]
@@ -13,7 +12,7 @@ interface SidebarProps {
   onToggleWorker: (id: string) => void
 }
 
-export default function Sidebar({ view, setView, decisions, filterWorker, setFilterWorker, workers, talkWorkers, onToggleWorker }: SidebarProps) {
+export default function Sidebar({ view, setView, filterWorker, setFilterWorker, workers, talkWorkers, onToggleWorker }: SidebarProps) {
   const [rotation, setRotation] = useState(0)
   const { dark, toggle, colors } = useTheme()
 
@@ -54,13 +53,13 @@ export default function Sidebar({ view, setView, decisions, filterWorker, setFil
 
       {/* View selector */}
       <strong style={{ marginBottom: 10, color: colors.text, fontSize: fontSizes.xl }}>View</strong>
-      {(['talk', 'events', 'decisions'] as const).map((v) => (
+      {(['talk', 'events'] as const).map((v) => (
         <div
           key={v}
           onClick={() => setView(v)}
           style={{ cursor: 'pointer', color: view === v ? colors.accent : colors.textDim, fontSize: fontSizes.md, lineHeight: '20px' }}
         >
-          {v === 'talk' ? 'Talk' : v === 'events' ? 'Events' : `Decisions${decisions.length > 0 ? ` (${decisions.length})` : ''}`}{view === v ? ' \u25C9' : ''}
+          {v === 'talk' ? 'Talk' : 'Events'}{view === v ? ' \u25C9' : ''}
         </div>
       ))}
 

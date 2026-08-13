@@ -11,7 +11,7 @@ import {
   toolContent, toolSummary, toolCallId,
   formatEventPayload, formatTime, truncate, findReferencedInput,
 } from '../components/talk-utils'
-import type { EventPayload, Decision } from '../types'
+import type { EventPayload } from '../types'
 
 interface TalkViewProps {
   events: EventPayload[]
@@ -20,8 +20,6 @@ interface TalkViewProps {
   onLoadMore?: () => void
   onMention?: (workerId: string) => void
   deliveries: Record<string, string[]>
-  decisions: Decision[]
-  makeDecision: (reqID: string, decision: string) => void
   humanId?: string
 }
 
@@ -43,7 +41,7 @@ function workerColor(id: string): string {
   return WORKER_COLORS[Math.abs(hash) % WORKER_COLORS.length]
 }
 
-export default function TalkView({ events, talkWorkers, onTraceClick, onLoadMore, onMention, deliveries, decisions, makeDecision, humanId = 'hiw' }: TalkViewProps) {
+export default function TalkView({ events, talkWorkers, onTraceClick, onLoadMore, onMention, deliveries, humanId = 'hiw' }: TalkViewProps) {
   const { dark, colors } = useTheme()
   const scrollRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
@@ -270,122 +268,10 @@ export default function TalkView({ events, talkWorkers, onTraceClick, onLoadMore
       continue
     }
 
-    // decision.made — right-aligned bubble
-    if (evt.type === 'decision.made') {
-      const decision = (evt.payload?.decision as string) || ''
-      const reasoning = (evt.payload?.reasoning as string) || ''
-      nodes.push(
-        <div key={evt.id} style={{ marginBottom: 12, textAlign: 'right' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: showBadge ? 4 : 0, justifyContent: 'flex-end' }}>
-            <WorkerBadge id={evt.worker_id} show={showBadge} />
-          </div>
-          <div
-            style={{
-              maxWidth: '70%',
-              display: 'inline-block',
-              textAlign: 'left',
-              background: dark ? 'rgba(90, 138, 90, 0.1)' : 'rgba(90, 138, 90, 0.06)',
-              border: '1px solid ' + (dark ? 'rgba(90, 138, 90, 0.3)' : 'rgba(90, 138, 90, 0.2)'),
-              borderRadius: '12px 12px 4px 12px',
-              padding: '10px 14px',
-              fontSize: fontSizes.base,
-              lineHeight: 1.5,
-              color: colors.text,
-            }}
-          >
-            <div style={{ fontSize: fontSizes.sm, color: colors.textDim, marginBottom: 4, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', width: '100%' }}>
-              <span style={{ color: colors.toolCompleted }}>✓ {evt.target_worker_id || '*'}</span>
-              <span style={{ color: colors.textDimmed, fontSize: fontSizes.xs }}>{formatTime(evt.timestamp)}</span>
-            </div>
-            <div style={{ fontWeight: 'bold', marginBottom: reasoning ? 4 : 0 }}>{decision}</div>
-            {reasoning && <div style={{ color: colors.textDimmed, fontSize: fontSizes.sm }}>{reasoning}</div>}
-            {evt.trace_id && (
-              <div style={{ marginTop: 6, textAlign: 'right' }}>
-                <span
-                  onClick={() => onTraceClick(evt.trace_id!)}
-                  style={{ cursor: 'pointer', fontSize: fontSizes.sm, color: colors.textDimmed, textDecoration: 'underline', textDecorationStyle: 'dotted' }}
-                  title="View all events in this trace"
-                >
-                  trace
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )
-      continue
-    }
-
     // Input renderers (right-side events)
     const InputRenderer = inputRenderers[evt.type]
     if (InputRenderer) {
       nodes.push(<InputRenderer key={evt.id} evt={evt} onTraceClick={onTraceClick} />)
-      continue
-    }
-
-    // Decision request card — left side, collapsible, default expanded
-    if (evt.type === 'tool.requested' && evt.payload?.name === 'request_human_decision') {
-      const args = evt.payload?.arguments as Record<string, any> || {}
-      const summary = (args.summary as string) || ''
-      const context = (args.context as string) || ''
-      const callId = (evt.payload?.call_id as string) || ''
-      const reqId = 'hiw-' + callId
-      const opts = (args.options as { id: string; label: string }[]) || []
-      const isCollapsed = expandedContent.has(callId)
-      nodes.push(
-        <div key={evt.id} style={{ maxWidth: '70%', marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: showBadge ? 4 : 0 }}>
-            <WorkerBadge id={evt.worker_id} show={showBadge} />
-          </div>
-          <div
-            style={{
-              border: '1px solid ' + (dark ? colors.decisionPending : 'rgba(180, 140, 60, 0.4)'),
-              borderRadius: '0 8px 8px 8px',
-              padding: '10px 14px',
-              fontSize: fontSizes.md,
-              lineHeight: 1.6,
-              color: colors.text,
-            }}
-          >
-            <div
-              onClick={() => toggleToolContent(callId)}
-              style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 8, marginBottom: isCollapsed ? 0 : 8 }}
-            >
-              <span style={{ color: colors.toolRequested, fontSize: fontSizes.base }}>Decision needed</span>
-              <span style={{ color: colors.textDimmed, fontSize: fontSizes.sm }}>→ {evt.target_worker_id || '*'}</span>
-              <span style={{ color: colors.textDimmed, fontSize: fontSizes.sm, marginLeft: 'auto' }}>{isCollapsed ? '▸' : '▾'}</span>
-              <span style={{ color: colors.textDimmed, fontSize: fontSizes.xs }}>{formatTime(evt.timestamp)}</span>
-            </div>
-            {!isCollapsed && (
-              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid ' + (dark ? 'rgba(180, 140, 60, 0.25)' : 'rgba(180, 140, 60, 0.15)') }}>
-                <div style={{ fontWeight: 'bold', marginBottom: 4, fontSize: fontSizes.lg }}>{summary}</div>
-                {context && <div style={{ color: colors.textDimmed, marginBottom: 8, fontSize: fontSizes.md }}>{context}</div>}
-                {opts.length > 0 && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {opts.map((o: any) => (
-                      <span
-                        key={o.id}
-                        onClick={() => makeDecision(reqId, o.id)}
-                        className="decision-opt"
-                        style={{
-                          background: colors.bgLighter,
-                          border: '1px solid ' + colors.borderLight,
-                          borderRadius: 4,
-                          padding: '4px 10px',
-                          fontSize: fontSizes.sm,
-                          color: colors.textDim,
-                        }}
-                      >
-                        {o.label}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )
       continue
     }
 

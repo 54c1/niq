@@ -40,7 +40,6 @@ export interface Palette {
     reason: string
     worker: string
     hiw: string
-    decision: string
     timer: string
     default: string
   }
@@ -55,11 +54,6 @@ export interface Palette {
   detailLabel: string
   detailValue: string
   detailBorder: string
-  // Decision styles
-  decisionResolved: string
-  decisionPending: string
-  decisionOptHover: string
-  decisionOptHoverBorder: string
 }
 
 const dark: Palette = {
@@ -85,7 +79,6 @@ const dark: Palette = {
     reason: '#8f7393',
     worker: '#2196f3',
     hiw: '#4caf50',
-    decision: '#f44336',
     timer: '#00bcd4',
     default: '#e0e0e0',
   },
@@ -98,10 +91,6 @@ const dark: Palette = {
   detailLabel: '#777',
   detailValue: '#ccc',
   detailBorder: '#333',
-  decisionResolved: 'rgba(100, 180, 100, 0.3)',
-  decisionPending: 'rgba(180, 140, 60, 0.5)',
-  decisionOptHover: 'rgba(180, 140, 60, 0.3)',
-  decisionOptHoverBorder: 'rgba(180, 140, 60, 0.8)',
 }
 
 const light: Palette = {
@@ -127,7 +116,6 @@ const light: Palette = {
     reason: '#7b1fa2',
     worker: '#1565c0',
     hiw: '#2e7d32',
-    decision: '#c62828',
     timer: '#00838f',
     default: '#1a1a1a',
   },
@@ -140,10 +128,6 @@ const light: Palette = {
   detailLabel: '#888',
   detailValue: '#444',
   detailBorder: '#ddd',
-  decisionResolved: 'rgba(100, 180, 100, 0.3)',
-  decisionPending: 'rgba(180, 140, 60, 0.4)',
-  decisionOptHover: 'rgba(180, 140, 60, 0.3)',
-  decisionOptHoverBorder: 'rgba(180, 140, 60, 0.8)',
 }
 
 interface ThemeCtx {

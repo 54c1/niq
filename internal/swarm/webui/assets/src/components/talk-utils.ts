@@ -82,7 +82,6 @@ export function getTypeColor(type: string, colors: import('../theme').Palette): 
   if (type.startsWith('reason.')) return colors.eventType.reason
   if (type.startsWith('worker.')) return colors.eventType.worker
   if (type.startsWith('hiw.')) return colors.eventType.hiw
-  if (type.startsWith('decision.')) return colors.eventType.decision
   if (type.startsWith('timer.')) return colors.eventType.timer
   return colors.eventType.default
 }
@@ -176,8 +175,6 @@ export function formatEventPayload(evt: EventPayload): string {
   if (p.result) parts.push(`result=${truncate(String(p.result), 60)}`)
   if (p.error) parts.push(`error=${truncate(String(p.error), 60)}`)
   if (p.summary) parts.push(`summary=${truncate(p.summary, 60)}`)
-  if (p.decision) parts.push(`decision=${p.decision}`)
-  if (p.request_id) parts.push(`request=${p.request_id}`)
   if (parts.length === 0) {
     for (const [k, v] of Object.entries(p)) {
       if (k === 'worker_id' || k === 'call_id' || k === 'content') continue

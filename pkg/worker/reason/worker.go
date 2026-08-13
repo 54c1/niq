@@ -80,7 +80,6 @@ func NewWorker(cfg Config) *Worker {
 		event.NewPattern("worker.abort"),
 		event.NewPattern("timer.timeout"),
 		event.NewPattern("timer.reminder"),
-		event.NewPattern("decision.made"),
 	)
 
 	w := &Worker{

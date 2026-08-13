@@ -16,21 +16,8 @@ export async function abortWorker(target: string): Promise<void> {
   })
 }
 
-export async function makeDecision(reqID: string, decision: string, reasoning = ''): Promise<void> {
-  await fetch(`/api/decisions/${reqID}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ decision, reasoning }),
-  })
-}
-
 export async function fetchWorkers(): Promise<{ id: string; type: string }[]> {
   const res = await fetch('/api/workers')
-  return res.json()
-}
-
-export async function fetchDecisions(): Promise<any[]> {
-  const res = await fetch('/api/decisions')
   return res.json()
 }
 

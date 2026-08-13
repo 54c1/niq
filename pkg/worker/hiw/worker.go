@@ -63,9 +63,8 @@ func (w *Worker) Start(ctx context.Context) error {
 		for {
 			select {
 			case <-busCh:
-				// HIW receives all events (subscribed to "*") but currently
-				// does not need to process them. The swarm's EventLog handles
-				// event streaming.
+				// Drain incoming events. HIW does not react to them; the
+				// swarm's EventLog handles streaming.
 			case <-ch:
 				return
 			case <-ctx.Done():

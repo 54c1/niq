@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"time"
 
-	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/service/eventbus"
+	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/worker/hiw"
 
 	"github.com/54c1/niq/core/event"

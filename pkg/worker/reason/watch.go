@@ -87,8 +87,6 @@ func (w *Worker) process(_ context.Context, evt event.Event) {
 		w.handleToolResult(evt)
 	case evt.Type == "tool.requested":
 		w.handleToolRequest(evt)
-	case evt.Type == "decision.made":
-		w.handleDecisionMade(evt)
 	default:
 		w.handleInput(evt)
 	}
@@ -129,27 +127,6 @@ func (w *Worker) handleAbort(_ event.Event) {
 	w.needReason = false
 }
 
-// recallToolCalls best-effort cancels in-flight tool calls by sending a
-// tool.cancel event to each call's target worker.
-func (w *Worker) recallToolCalls(tcs []*ToolCall) {
-	byTarget := make(map[string][]string)
-	for _, rc := range tcs {
-		if rc.TargetID != "" {
-			byTarget[rc.TargetID] = append(byTarget[rc.TargetID], rc.CallID)
-		}
-	}
-
-	for target, callIDs := range byTarget {
-		for _, callID := range callIDs {
-			evt := event.New("tool.cancel", w.ID(), map[string]any{
-				"call_id": callID,
-			})
-			evt.TraceID = w.currentTraceID
-			_ = w.Channel.Send(context.Background(), evt, target)
-		}
-	}
-}
-
 // handleTimeout processes a timer.timeout event (from set_tool_timeout).
 // Records a system message and schedules a fresh reasoning round.
 // Stale timers (cancelled or prior batch) are silently discarded.
@@ -159,6 +136,7 @@ func (w *Worker) handleTimeout(evt event.Event) {
 	// Only the current round's timer is meaningful; an orphaned timer from a
 	// prior round (whose call_id no longer matches) is silently discarded.
 	if w.activeTimeout != "" && timerID == w.activeTimeout {
+		w.captureTraceID(evt)
 		msg := llm.Message{
 			Role:    llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "[system] tool call timeout"}},
@@ -172,9 +150,7 @@ func (w *Worker) handleTimeout(evt event.Event) {
 // reminder is a gentle wake-up: it schedules fresh reasoning without cancelling
 // any in-flight reasoning call.
 func (w *Worker) handleReminder(evt event.Event) {
-	if evt.TraceID != "" {
-		w.currentTraceID = evt.TraceID
-	}
+	w.captureTraceID(evt)
 	msgs := w.convertEvent(evt)
 	w.scheduleInput(msgs, PreemptCauseReminder)
 }
@@ -187,6 +163,7 @@ func (w *Worker) handleToolResult(evt event.Event) {
 	// Normal resolution of a Pending call.
 	if w.toolCallTracker.handleResponse(evt) {
 		w.updatePlaceholderFromEvent(evt)
+		// All tool calls resolved
 		if w.toolCallTracker.Resolved() {
 			w.cancelTimeout()
 			w.needReason = true
@@ -210,11 +187,7 @@ func (w *Worker) handleToolResult(evt event.Event) {
 //	             when the system is idle (no in-flight reasoning, no pending
 //	             tool calls). Does not interrupt or park anything.
 func (w *Worker) handleInput(evt event.Event) {
-	// Capture the trace_id from the incoming event so that all events
-	// published during this reasoning round propagate the same trace_id.
-	if evt.TraceID != "" {
-		w.currentTraceID = evt.TraceID
-	}
+	w.captureTraceID(evt)
 
 	msgs := w.convertEvent(evt)
 
@@ -227,11 +200,33 @@ func (w *Worker) handleInput(evt event.Event) {
 	}
 }
 
+// recallToolCalls best-effort cancels in-flight tool calls by sending a
+// tool.cancel event to each call's target worker.
+func (w *Worker) recallToolCalls(tcs []*ToolCall) {
+	byTarget := make(map[string][]string)
+	for _, rc := range tcs {
+		if rc.TargetID != "" {
+			byTarget[rc.TargetID] = append(byTarget[rc.TargetID], rc.CallID)
+		}
+	}
+
+	for target, callIDs := range byTarget {
+		for _, callID := range callIDs {
+			evt := event.New("tool.cancel", w.ID(), map[string]any{
+				"call_id": callID,
+			})
+			evt.TraceID = w.currentTraceID
+			_ = w.Channel.Send(context.Background(), evt, target)
+		}
+	}
+}
+
 // appendInput appends messages and schedules a new round only when the system
 // is idle — no in-flight reasoning and no pending tool calls. Does not
 // interrupt or park anything. This is the least intrusive input mode (level 1).
 func (w *Worker) appendInput(msgs []llm.Message) {
 	w.messages = append(w.messages, msgs...)
+
 	if !w.isReasoning && w.toolCallTracker.Resolved() {
 		w.needReason = true
 	}
@@ -262,25 +257,13 @@ func (w *Worker) interruptInput(msgs []llm.Message, cause PreemptCause) {
 	w.needReason = true
 }
 
-// handleDecisionMade converts a human decision result into a user message and
-// schedules fresh reasoning. Like user input, a decision needs a response.
-func (w *Worker) handleDecisionMade(evt event.Event) {
-	decision, _ := evt.Payload["decision"].(string)
-	reasoning, _ := evt.Payload["reasoning"].(string)
-	summary, _ := evt.Payload["request_summary"].(string)
-	if decision == "" {
-		return
+// captureTraceID propagates the trace_id from an incoming event into the
+// worker's current trace, so all events published during the reasoning round
+// it triggers share the same trace. Events without a trace_id leave it unchanged.
+func (w *Worker) captureTraceID(evt event.Event) {
+	if evt.TraceID != "" {
+		w.currentTraceID = evt.TraceID
 	}
-	text := fmt.Sprintf("[Human decision on \"%s\"]\nDecision: %s", summary, decision)
-	if reasoning != "" {
-		text += "\nReasoning: " + reasoning
-	}
-	msg := llm.Message{
-		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{{Type: llm.ContentText, Text: text}},
-	}
-	w.scheduleInput([]llm.Message{msg}, PreemptCauseInput)
-	log.Printf("[reason %s] received human decision on \"%s\": %s", w.ID(), summary, decision)
 }
 
 // parkPending parks all pending tool calls with the given cause and cancels the
@@ -307,16 +290,14 @@ func (w *Worker) cancelTimeout() {
 	if t, ok := w.workerTools["timer.set_tool_timeout"]; ok {
 		targetID = t.Provider
 	}
-	if targetID == "" {
-		// Fallback: the timer worker is always named "timer" in the default
-		// configuration, but prefer the dynamic lookup above.
-		targetID = "timer"
-	}
+
+	// Send cancel event
 	timerID := w.activeTimeout
 	evt := event.New("tool.cancel", w.ID(), map[string]any{
 		"call_id":  timerID + "-cancel",
 		"timer_id": timerID,
 	})
 	_ = w.Channel.Send(context.Background(), evt, targetID)
+
 	w.activeTimeout = ""
 }

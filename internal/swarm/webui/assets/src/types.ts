@@ -9,19 +9,6 @@ export interface EventPayload {
   payload: Record<string, any>
 }
 
-export interface Decision {
-  request_id: string
-  worker_id: string
-  summary: string
-  context: string
-  options: { id: string; label: string }[]
-  trace_id: string
-  status: string
-  created_at: number
-  decision?: string
-  reasoning?: string
-}
-
 export interface WorkerInfo {
   id: string
   type: string
