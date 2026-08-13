@@ -21,11 +21,11 @@ import (
 
 // Config holds the configuration for a HostWorker.
 type Config struct {
-	ID         string
-	Bus        corebus.WorkerSideChannel // data-plane client
-	Registry   corebus.IdentityRegistry  // control-plane identity registry
-	Listener   *inprocess.InProcListener  // for spawning workers
-	Engine     *workerhost.WorkerService
+	ID       string
+	Bus      corebus.WorkerSideChannel // data-plane client
+	Registry corebus.IdentityRegistry  // control-plane identity registry
+	Listener *inprocess.InProcListener // for spawning workers
+	Engine   *workerhost.WorkerService
 }
 
 // HostWorker is a bus-facing worker that manages other worker lifecycles.
@@ -51,6 +51,7 @@ func New(cfg Config) *HostWorker {
 	return &HostWorker{
 		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
+			event.NewPattern("tool.cancel"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),
 		registry: cfg.Registry,
@@ -120,6 +121,9 @@ func (w *HostWorker) process(evt event.Event) {
 		if evt.WorkerId != w.ID() {
 			w.publishReady()
 		}
+	case "tool.cancel":
+		callID, _ := evt.Payload["call_id"].(string)
+		log.Printf("[host %s] cancel requested for %s (best-effort)", w.ID(), callID)
 	case "tool.requested":
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return

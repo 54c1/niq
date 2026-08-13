@@ -37,38 +37,41 @@ func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 // the watch event loop stays responsive while the LLM call is in flight.
 func (w *Worker) tryReason(ctx context.Context) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if !w.needReason || w.isReasoning {
-		w.mu.Unlock()
 		return
 	}
+
 	w.isReasoning = true
 	w.needReason = false
-	w.mu.Unlock()
 
 	go w.reason(ctx)
 }
 
 // process routes an event through one of the dispatch paths:
-//   - abort: park pending tools + recall + end session
-//   - timer.timeout: park still-pending tools (cause=timeout)
-//   - timer.reminder: reminder timer fired, wake the LLM
+//   - abort: park pending tools + recall, clear needReason
+//   - timer.timeout: record system message + schedule (level 2)
+//   - timer.reminder: convert to messages + schedule (level 2)
 //   - worker.ready/gone: learn/forget a worker's tools & events
 //   - tool result: resolve / park-late / update placeholder
-//   - input: convert to messages + park + set needReason
+//   - input: convert to messages + schedule (level 1/2/3 via input_mode)
+//
+// Three levels of input handling:
+//
+//	level 1 (append):  append message, schedule if idle, no park
+//	level 2 (reminder/timeout): append message, schedule, park on next round
+//	level 3 (default): interrupt, schedule, park on next round
 func (w *Worker) process(_ context.Context, evt event.Event) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
-		return
-	}
 
 	log.Printf("[reason %s] event: %s (from=%s)", w.ID(), evt.Type, evt.WorkerId)
 
 	switch {
 	case evt.Type == "worker.discover":
 		if evt.WorkerId != w.ID() {
-			w.publishReady()
+			w.broadcastReady()
 		}
 	case evt.Type == "worker.abort":
 		w.handleAbort(evt)
@@ -93,44 +96,53 @@ func (w *Worker) process(_ context.Context, evt event.Event) {
 
 // handleAbort cancels the current LLM call, parks all pending tools (so late
 // results can still be contextualized), best-effort recalls them, and records
-// the abort in the conversation transcript. The session ends (needReason=false).
+// the abort in the conversation transcript. needReason is cleared so no new
+// reasoning round starts until the next worker.input.
 func (w *Worker) handleAbort(_ event.Event) {
-	w.interruptReason = InterruptCauseAbort
+	w.interruptReason = PreemptCauseAbort
+
+	// Broadcast reason end
+	hadReasoning := w.cancelReason != nil
+	if !hadReasoning {
+		// No reasoning round was in flight to publish the interrupt lifecycle.
+		w.broadcastReasonEnd(w.currentTraceID, StopReasonAborted)
+	}
+
+	// Cancel current running reason
 	if w.cancelReason != nil {
 		w.cancelReason()
 		w.cancelReason = nil
 	}
-	tcs := w.callTracker.parkAll(InterruptCauseAbort)
-	for _, rc := range tcs {
-		w.updatePlaceholderToParked(rc)
-	}
-	w.recallCalls(tcs)
-	w.cancelTimeout()
+
+	// Park and recall tool calls
+	tcs := w.parkPending(PreemptCauseAbort)
+	w.recallToolCalls(tcs)
+
+	// Record the abort in the conversation transcript so the LLM
+	// knows what happened when the next round starts.
 	w.messages = append(w.messages, llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: fmt.Sprintf("[system] reasoning was aborted. %d tool call(s) parked.", len(tcs))}},
 	})
+
 	w.needReason = false
-	w.publishReasonEnd(w.currentTraceID, "aborted")
 }
 
-// recallCalls best-effort cancels in-flight tool calls by sending a directed
-// tool.requested name="cancel" to each call's target worker, mirroring the
-// timer worker's cancel shape. Cancellation is not guaranteed to succeed.
-func (w *Worker) recallCalls(tcs []*ToolCall) {
+// recallToolCalls best-effort cancels in-flight tool calls by sending a
+// tool.cancel event to each call's target worker.
+func (w *Worker) recallToolCalls(tcs []*ToolCall) {
 	byTarget := make(map[string][]string)
 	for _, rc := range tcs {
 		if rc.TargetID != "" {
 			byTarget[rc.TargetID] = append(byTarget[rc.TargetID], rc.CallID)
 		}
 	}
+
 	for target, callIDs := range byTarget {
 		for _, callID := range callIDs {
-			evt := event.New("tool.requested", w.ID(), map[string]any{
-				"call_id":   callID + "-cancel",
-				"name":      "cancel",
-				"arguments": map[string]any{"call_id": callID},
+			evt := event.New("tool.cancel", w.ID(), map[string]any{
+				"call_id": callID,
 			})
 			evt.TraceID = w.currentTraceID
 			_ = w.Channel.Send(context.Background(), evt, target)
@@ -139,7 +151,7 @@ func (w *Worker) recallCalls(tcs []*ToolCall) {
 }
 
 // handleTimeout processes a timer.timeout event (from set_tool_timeout).
-// Parks all still-pending tool calls with cause=timeout and wakes the LLM.
+// Records a system message and schedules a fresh reasoning round.
 // Stale timers (cancelled or prior batch) are silently discarded.
 func (w *Worker) handleTimeout(evt event.Event) {
 	timerID, _ := evt.Payload["timer_id"].(string)
@@ -147,26 +159,24 @@ func (w *Worker) handleTimeout(evt event.Event) {
 	// Only the current round's timer is meaningful; an orphaned timer from a
 	// prior round (whose call_id no longer matches) is silently discarded.
 	if w.activeTimeout != "" && timerID == w.activeTimeout {
-		tcs := w.callTracker.parkAll(InterruptCauseTimeout)
-		for _, tc := range tcs {
-			w.updatePlaceholderToParked(tc)
+		msg := llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "[system] tool call timeout"}},
 		}
-		w.activeTimeout = ""
-		w.needReason = true
+		w.scheduleInput([]llm.Message{msg}, PreemptCauseTimeout)
 	}
 }
 
 // handleReminder processes a timer.reminder event (from elapse). It wakes the
 // LLM — the event payload carries the purpose so the LLM knows what to do. A
 // reminder is a gentle wake-up: it schedules fresh reasoning without cancelling
-// any in-flight reasoning call (unlike a user input).
+// any in-flight reasoning call.
 func (w *Worker) handleReminder(evt event.Event) {
 	if evt.TraceID != "" {
 		w.currentTraceID = evt.TraceID
 	}
 	msgs := w.convertEvent(evt)
-	w.messages = append(w.messages, msgs...)
-	w.setImmediateReasoning(InterruptCauseReminder)
+	w.scheduleInput(msgs, PreemptCauseReminder)
 }
 
 // handleToolResult processes a tool.completed/failed/rejected event.
@@ -175,16 +185,17 @@ func (w *Worker) handleReminder(evt event.Event) {
 // Untracked call_ids (e.g. synthetic cancel responses) are ignored.
 func (w *Worker) handleToolResult(evt event.Event) {
 	// Normal resolution of a Pending call.
-	if w.callTracker.handleResponse(evt) {
+	if w.toolCallTracker.handleResponse(evt) {
 		w.updatePlaceholderFromEvent(evt)
-		if w.callTracker.Resolved() {
+		if w.toolCallTracker.Resolved() {
 			w.cancelTimeout()
 			w.needReason = true
 		}
 		return
 	}
+
 	// Late result for a Parked call.
-	if parked := w.callTracker.resolveLate(evt); parked != nil {
+	if parked := w.toolCallTracker.resolveLate(evt); parked != nil {
 		w.appendLateResult(parked, evt)
 	}
 }
@@ -192,11 +203,12 @@ func (w *Worker) handleToolResult(evt event.Event) {
 // handleInput processes an input event. The input_mode field in the payload
 // controls how the event interacts with pending tool calls:
 //
-//	"default" — respond to the user immediately: interrupt the in-flight
-//	             reasoning call, park any pending tools (cause=input) so they
-//	             don't mix with the new round, and trigger reasoning.
-//	"append"  — leave a message only: do not set needReason; the current task
-//	             finishes first and the next round notices it.
+//	"default" — level 3: interrupt the in-flight reasoning call and schedule
+//	             a fresh round. The pending tools are parked when reason()
+//	             starts (using the stored cause).
+//	"append"  — level 1: append the message and schedule a new round, but only
+//	             when the system is idle (no in-flight reasoning, no pending
+//	             tool calls). Does not interrupt or park anything.
 func (w *Worker) handleInput(evt event.Event) {
 	// Capture the trace_id from the incoming event so that all events
 	// published during this reasoning round propagate the same trace_id.
@@ -205,22 +217,49 @@ func (w *Worker) handleInput(evt event.Event) {
 	}
 
 	msgs := w.convertEvent(evt)
-	w.messages = append(w.messages, msgs...)
 
 	mode, _ := evt.Payload["input_mode"].(string)
 	switch mode {
 	case "append":
-		// Don't set needReason — let pending tools complete first.
+		w.appendInput(msgs)
 	default:
-		// "default" or unset: respond to the user immediately. Interrupt any
-		// in-flight reasoning call, then schedule a fresh round.
-		w.interruptReason = InterruptCauseInput
-		if w.cancelReason != nil {
-			w.cancelReason()
-			w.cancelReason = nil
-		}
-		w.setImmediateReasoning(InterruptCauseInput)
+		w.interruptInput(msgs, PreemptCauseInput)
 	}
+}
+
+// appendInput appends messages and schedules a new round only when the system
+// is idle — no in-flight reasoning and no pending tool calls. Does not
+// interrupt or park anything. This is the least intrusive input mode (level 1).
+func (w *Worker) appendInput(msgs []llm.Message) {
+	w.messages = append(w.messages, msgs...)
+	if !w.isReasoning && w.toolCallTracker.Resolved() {
+		w.needReason = true
+	}
+}
+
+// scheduleInput appends messages, records the cause, and schedules a fresh
+// reasoning round. The pending tools are parked when reason() starts, not
+// here. This is the moderate input mode (level 2) — it does not interrupt
+// an in-flight reasoning call, but ensures the next round responds promptly.
+func (w *Worker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
+	w.messages = append(w.messages, msgs...)
+	w.immediateReasoningCause = cause
+	w.needReason = true
+}
+
+// interruptInput cancels the in-flight reasoning call, records the cause,
+// and schedules a fresh round. The pending tools are parked when reason()
+// starts. This is the strongest input mode (level 3) — it interrupts the
+// current LLM call so the new input is handled immediately.
+func (w *Worker) interruptInput(msgs []llm.Message, cause PreemptCause) {
+	w.messages = append(w.messages, msgs...)
+	w.interruptReason = cause
+	if w.cancelReason != nil {
+		w.cancelReason()
+		w.cancelReason = nil
+	}
+	w.immediateReasoningCause = cause
+	w.needReason = true
 }
 
 // handleDecisionMade converts a human decision result into a user message and
@@ -236,40 +275,36 @@ func (w *Worker) handleDecisionMade(evt event.Event) {
 	if reasoning != "" {
 		text += "\nReasoning: " + reasoning
 	}
-	w.messages = append(w.messages, llm.Message{
+	msg := llm.Message{
 		Role:    llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText, Text: text}},
-	})
-	w.setImmediateReasoning(InterruptCauseInput)
+	}
+	w.scheduleInput([]llm.Message{msg}, PreemptCauseInput)
 	log.Printf("[reason %s] received human decision on \"%s\": %s", w.ID(), summary, decision)
 }
 
-// setImmediateReasoning sets the expectation that a fresh reasoning round should
-// run at the next event loop tick, parking any in-flight (Pending) tool calls
-// with the given cause first. It mirrors Node's setImmediate — we set the flag
-// (needReason) and wait for tryReason to consume it, we do not execute the
-// reasoning ourselves. Used by user input (InterruptCauseInput) and reminders (InterruptCauseReminder).
-// The parking keeps pending tools from mixing with the new round's tracking.
-func (w *Worker) setImmediateReasoning(cause InterruptCause) {
-	tcs := w.callTracker.parkAll(cause)
+// parkPending parks all pending tool calls with the given cause and cancels the
+// current round's timeout timer. Returns the parked calls for callers that need
+// to recall them (e.g., handleAbort).
+func (w *Worker) parkPending(cause PreemptCause) []*ToolCall {
+	tcs := w.toolCallTracker.parkAll(cause)
 	for _, rc := range tcs {
 		w.updatePlaceholderToParked(rc)
 	}
 	w.cancelTimeout()
-	w.needReason = true
+	return tcs
 }
 
 // cancelTimeout cancels the current round's active timeout timer by
-// sending timer.cancel to the timer worker. Called when all tools have resolved
-// — the timeout is no longer needed. The request is targeted (not broadcast) to
-// avoid confusing other workers that subscribe to tool.requested.
+// sending a tool.cancel event to the timer worker. Called when all tools have resolved
+// — the timeout is no longer needed.
 func (w *Worker) cancelTimeout() {
 	if w.activeTimeout == "" {
 		return
 	}
 	// Look up the timer worker ID from the set_tool_timeout tool definition.
 	targetID := ""
-	if t, ok := w.tools["timer.set_tool_timeout"]; ok {
+	if t, ok := w.workerTools["timer.set_tool_timeout"]; ok {
 		targetID = t.Provider
 	}
 	if targetID == "" {
@@ -278,10 +313,9 @@ func (w *Worker) cancelTimeout() {
 		targetID = "timer"
 	}
 	timerID := w.activeTimeout
-	evt := event.New("tool.requested", w.ID(), map[string]any{
-		"call_id":   timerID + "-cancel",
-		"name":      "cancel",
-		"arguments": map[string]any{"timer_id": timerID},
+	evt := event.New("tool.cancel", w.ID(), map[string]any{
+		"call_id":  timerID + "-cancel",
+		"timer_id": timerID,
 	})
 	_ = w.Channel.Send(context.Background(), evt, targetID)
 	w.activeTimeout = ""

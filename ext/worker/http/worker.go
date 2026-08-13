@@ -53,6 +53,7 @@ func New(cfg Config) *Worker {
 	return &Worker{
 		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
 			event.NewPattern("tool.requested"),
+			event.NewPattern("tool.cancel"),
 			event.NewPattern("worker.discover"),
 		}, cfg.Bus),
 		client:    c,
@@ -110,6 +111,9 @@ func (w *Worker) process(evt event.Event) {
 	switch evt.Type {
 	case "worker.discover":
 		w.publishReady()
+	case "tool.cancel":
+		callID, _ := evt.Payload["call_id"].(string)
+		log.Printf("[http worker %s] cancel requested for %s (best-effort)", w.ID(), callID)
 	case "tool.requested":
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return
@@ -129,11 +133,6 @@ func (w *Worker) handleToolCall(evt event.Event) {
 	switch name {
 	case "webfetch":
 		result, err = w.handleWebfetch(args)
-	case "cancel":
-		// Best-effort recall acknowledgment. In-flight fetches cannot be forcibly
-		// interrupted; their results may still arrive as late results.
-		callID, _ := args["call_id"].(string)
-		result = fmt.Sprintf("cancel requested for %s (best-effort)", callID)
 	default:
 		handled, res, mcperr := w.tryMCPTool(name, args)
 		if handled {

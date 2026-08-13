@@ -42,7 +42,7 @@ func typeMatches(pattern, eventType string) bool {
 
 // convertEvent routes an event through the registered EventConverters.
 func (w *Worker) convertEvent(evt event.Event) []llm.Message {
-	for _, h := range w.eventConverter {
+	for _, h := range w.eventConverters {
 		if typeMatches(h.Pattern.Type, evt.Type) {
 			return h.Converter(evt)
 		}
@@ -86,15 +86,15 @@ func DefaultConverter(evt event.Event) []llm.Message {
 
 // parkReason returns the explanatory text shown in the [pending] placeholder
 // when a call is parked, describing why the reasoner stopped waiting on it.
-func parkReason(cause InterruptCause) string {
+func parkReason(cause PreemptCause) string {
 	switch cause {
-	case InterruptCauseTimeout:
+	case PreemptCauseTimeout:
 		return "Tool call timed out; reasoner proceeded without waiting"
-	case InterruptCauseInput:
+	case PreemptCauseInput:
 		return "Tool call interrupted by new input; reasoner proceeded without waiting"
-	case InterruptCauseAbort:
+	case PreemptCauseAbort:
 		return "Tool call aborted"
-	case InterruptCauseReminder:
+	case PreemptCauseReminder:
 		return "Tool call interrupted by reminder; reasoner proceeded without waiting"
 	default:
 		return "Tool call parked; reasoner proceeded"
@@ -219,13 +219,13 @@ func (w *Worker) appendLateResult(parked *ToolCall, evt event.Event) {
 	label := "Late result for tool call"
 	if parked != nil {
 		switch parked.ParkCause {
-		case InterruptCauseTimeout:
+		case PreemptCauseTimeout:
 			label = "Timed-out tool call"
-		case InterruptCauseInput:
+		case PreemptCauseInput:
 			label = "Interrupted tool call"
-		case InterruptCauseAbort:
+		case PreemptCauseAbort:
 			label = "Aborted tool call"
-		case InterruptCauseReminder:
+		case PreemptCauseReminder:
 			label = "Interrupted tool call"
 		}
 	}

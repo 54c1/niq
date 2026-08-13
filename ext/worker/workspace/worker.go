@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 
 	corebus "github.com/54c1/niq/core/bus"
@@ -43,6 +44,7 @@ type WorkspaceWorker struct {
 func New(cfg Config) *WorkspaceWorker {
 	subs := []event.EventPattern{
 		event.NewPattern("tool.requested"),
+		event.NewPattern("tool.cancel"),
 		event.NewPattern("worker.discover"),
 	}
 	return &WorkspaceWorker{
@@ -103,6 +105,9 @@ func (w *WorkspaceWorker) process(ctx context.Context, evt event.Event) {
 	switch evt.Type {
 	case "worker.discover":
 		w.publishReady()
+	case "tool.cancel":
+		callID, _ := evt.Payload["call_id"].(string)
+		log.Printf("[workspace %s] cancel requested for %s (best-effort)", w.ID(), callID)
 	case "tool.requested":
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return

@@ -18,10 +18,21 @@ import (
 )
 
 func (w *Worker) reason(ctx context.Context) {
-	// Phase 1: Snapshot state under lock before the LLM call.
+	// Phase 1: Park leftover tools and snapshot state under lock.
 	w.mu.Lock()
 	w.isReasoning = true
 	w.activeTimeout = "" // each round starts with no active timeout timer
+
+	// Park any pending tools from the previous round before taking the
+	// snapshot, so the LLM sees the parked context. The cause is taken
+	// from setImmediateReasoning if set, otherwise falls back to Input.
+	cause := w.immediateReasoningCause
+	if cause == "" {
+		cause = PreemptCauseInput
+	}
+	w.immediateReasoningCause = ""
+	w.parkPending(cause)
+
 	traceID := w.currentTraceID
 	tools := w.allTools()
 	c := &llm.Context{
@@ -40,7 +51,7 @@ func (w *Worker) reason(ctx context.Context) {
 	w.logLLMCall(c)
 
 	// Phase 2: Streaming LLM call.
-	w.publishReasonStart(traceID)
+	w.broadcastReasonStart(traceID)
 	reasonCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
 	w.cancelReason = cancel
@@ -67,24 +78,14 @@ func (w *Worker) reason(ctx context.Context) {
 		// case interrupted
 		if reasonCtx.Err() != nil {
 			log.Printf("[reason %s] reasoning interrupted", w.ID())
-			w.publishReasonEnd(traceID, "interrupted")
+			w.broadcastReasonEnd(traceID, StopReasonInterrupted)
 			w.isReasoning = false
 			w.mu.Unlock()
 			w.tryReason(ctx)
 			return
 		}
 
-		log.Printf("[reason %s] LLM error: %v", w.ID(), err)
-		errEvt := event.New("reason.response", w.ID(), map[string]any{
-			"content":     []any{fmt.Sprintf("Error: %v", err)},
-			"stop_reason": "error",
-		})
-		errEvt.TraceID = traceID
-		_ = w.Channel.Broadcast(context.Background(), errEvt) // reason.response — error content
-		w.publishReasonEnd(traceID, "error")                  // reason.end — lifecycle signal
-		w.isReasoning = false
-		w.mu.Unlock()
-		w.tryReason(ctx)
+		w.broadcastErrorAndEnd(ctx, traceID, err)
 		return
 	}
 
@@ -103,11 +104,11 @@ func (w *Worker) reason(ctx context.Context) {
 
 	flushBatches := func() {
 		if thinkingBuf.Len() > 0 {
-			w.publishThinkingDelta(thinkingBuf.String(), traceID)
+			w.broadcastThinkingDelta(thinkingBuf.String(), traceID)
 			thinkingBuf.Reset()
 		}
 		if textBuf.Len() > 0 {
-			w.publishTextDelta(textBuf.String(), traceID)
+			w.broadcastTextDelta(textBuf.String(), traceID)
 			textBuf.Reset()
 		}
 	}
@@ -185,13 +186,13 @@ func (w *Worker) reason(ctx context.Context) {
 		preserved := partialThinking + partialText
 		log.Printf("[reason %s] reasoning interrupted (cause=%s, preserved=%d chars)", w.ID(), cause, len(preserved))
 		evt := event.New("reason.interrupted", w.ID(), map[string]any{
-			"reason":          cause,
+			"reason":          string(cause),
 			"preserved_chars": len(preserved),
 			"preserved_text":  preserved,
 		})
 		evt.TraceID = traceID
 		_ = w.Channel.Broadcast(context.Background(), evt)
-		w.publishReasonEnd(traceID, "interrupted")
+		w.broadcastReasonEnd(traceID, StopReasonInterrupted)
 		w.isReasoning = false
 		w.mu.Unlock()
 		w.tryReason(ctx)
@@ -199,17 +200,7 @@ func (w *Worker) reason(ctx context.Context) {
 	}
 
 	if streamErr != nil {
-		log.Printf("[reason %s] LLM error: %v", w.ID(), streamErr)
-		errEvt := event.New("reason.response", w.ID(), map[string]any{
-			"content":     []any{fmt.Sprintf("Error: %v", streamErr)},
-			"stop_reason": "error",
-		})
-		errEvt.TraceID = traceID
-		_ = w.Channel.Broadcast(context.Background(), errEvt) // reason.response — error content
-		w.publishReasonEnd(traceID, "error")                  // reason.end — lifecycle signal
-		w.isReasoning = false
-		w.mu.Unlock()
-		w.tryReason(ctx)
+		w.broadcastErrorAndEnd(ctx, traceID, streamErr)
 		return
 	}
 
@@ -218,17 +209,7 @@ func (w *Worker) reason(ctx context.Context) {
 	finalMsg, err := stream.Result(resultCtx)
 	resultCancel()
 	if err != nil {
-		log.Printf("[reason %s] stream result error: %v", w.ID(), err)
-		errEvt := event.New("reason.response", w.ID(), map[string]any{
-			"content":     []any{fmt.Sprintf("Error: %v", err)},
-			"stop_reason": "error",
-		})
-		errEvt.TraceID = traceID
-		_ = w.Channel.Broadcast(context.Background(), errEvt) // reason.response — error content
-		w.publishReasonEnd(traceID, "error")                  // reason.end — lifecycle signal
-		w.isReasoning = false
-		w.mu.Unlock()
-		w.tryReason(ctx)
+		w.broadcastErrorAndEnd(ctx, traceID, err)
 		return
 	}
 
@@ -237,24 +218,20 @@ func (w *Worker) reason(ctx context.Context) {
 
 	w.messages = append(w.messages, finalMsg)
 
-	// Collect tool calls from the response.
+	// Collect tool calls and thinking blocks from the response.
 	var toolCalls []llm.ContentBlock
-	for _, block := range finalMsg.Content {
-		if block.Type == llm.ContentToolCall {
-			toolCalls = append(toolCalls, block)
-		}
-	}
-
-	// Publish complete thinking content (if any was streamed via deltas).
 	var thinkingBlocks []llm.ContentBlock
 	for _, block := range finalMsg.Content {
-		if block.Type == llm.ContentThinking {
+		switch block.Type {
+		case llm.ContentToolCall:
+			toolCalls = append(toolCalls, block)
+		case llm.ContentThinking:
 			thinkingBlocks = append(thinkingBlocks, block)
 		}
 	}
 	if len(thinkingBlocks) > 0 {
 		log.Printf("[reason %s] publishing %d thinking block(s)", w.ID(), len(thinkingBlocks))
-		w.publishThinking(thinkingBlocks, traceID)
+		w.broadcastThinking(thinkingBlocks, traceID)
 	} else {
 		log.Printf("[reason %s] no thinking blocks in response (content_blocks=%d)", w.ID(), len(finalMsg.Content))
 	}
@@ -265,8 +242,8 @@ func (w *Worker) reason(ctx context.Context) {
 	}
 
 	// Text-only response: publish content, then signal round end.
-	w.publishResponse(finalMsg, traceID)             // reason.response — text content
-	w.publishReasonEnd(traceID, finalMsg.StopReason) // reason.end — lifecycle signal
+	w.broadcastResponse(finalMsg, traceID)                         // reason.response — text content
+	w.broadcastReasonEnd(traceID, StopReason(finalMsg.StopReason)) // reason.end — lifecycle signal
 
 	w.isReasoning = false
 	w.mu.Unlock()
@@ -298,7 +275,7 @@ func (w *Worker) logLLMCall(c *llm.Context) {
 	// them — not necessarily the "timer" worker).
 	hasTimeout := false
 	hasElapse := false
-	for name := range w.tools {
+	for name := range w.workerTools {
 		if strings.HasSuffix(name, ".set_tool_timeout") {
 			hasTimeout = true
 		}
@@ -326,12 +303,12 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 
 	// Record the current round's single timeout timer, if any. At most one
 	// is meaningful — the first timer to fire parks all pending tools. Only
-	// record if the tool exists in w.tools — if the providing worker hasn't
+	// record if the tool exists in w.workerTools — if the providing worker hasn't
 	// announced yet or was removed, skip so cancelTimeout/handleTimeout
 	// are naturally disabled.
 	for _, tc := range busCalls {
 		if tc.ToolName == "timer.set_tool_timeout" {
-			if _, ok := w.tools[tc.ToolName]; ok {
+			if _, ok := w.workerTools[tc.ToolName]; ok {
 				w.activeTimeout = tc.ToolCallID
 			}
 		}
@@ -341,19 +318,17 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 
 	// Group tool calls by target worker, then publish tool.requested
 	// for each group. The bus routes each batch to the correct worker.
-	// Unknown tools (not in w.tools, e.g. hallucinated by the LLM) are
+	// Unknown tools (not in w.workerTools, e.g. hallucinated by the LLM) are
 	// failed immediately instead of broadcast — broadcasting confuses
 	// other workers that subscribe to tool.requested.
-	log.Printf("[reason %s] requesting %d tool call(s) via bus: %v", w.ID(), len(busCalls), func() []string {
-		var names []string
-		for _, tc := range busCalls {
-			names = append(names, tc.ToolName)
-		}
-		return names
-	}())
+	toolNames := make([]string, len(busCalls))
+	for i, tc := range busCalls {
+		toolNames[i] = tc.ToolName
+	}
+	log.Printf("[reason %s] requesting %d tool call(s) via bus: %v", w.ID(), len(busCalls), toolNames)
 	callsByTarget := make(map[string][]llm.ContentBlock)
 	for _, tc := range busCalls {
-		t, ok := w.tools[tc.ToolName]
+		t, ok := w.workerTools[tc.ToolName]
 		if !ok {
 			log.Printf("[reason %s] unknown tool: %s — failing immediately", w.ID(), tc.ToolName)
 			w.replacePlaceholder(tc.ToolCallID, failMessage(tc.ToolCallID, tc.ToolName, "unknown tool: "+tc.ToolName))
@@ -365,15 +340,15 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 		callsByTarget[t.Provider] = append(callsByTarget[t.Provider], tc)
 	}
 	for target, calls := range callsByTarget {
-		w.callTracker.Add(target, calls)
-		w.publishToolRequests(target, w.ID(), calls, traceID)
+		w.toolCallTracker.Add(target, calls)
+		w.sendToolRequests(target, w.ID(), calls, traceID)
 	}
 	w.isReasoning = false
 	w.mu.Unlock()
 	w.tryReason(ctx)
 }
 
-func (w *Worker) publishResponse(msg llm.Message, traceID string) {
+func (w *Worker) broadcastResponse(msg llm.Message, traceID string) {
 	var texts []any
 	for _, block := range msg.Content {
 		if block.Type == llm.ContentText {
@@ -389,7 +364,7 @@ func (w *Worker) publishResponse(msg llm.Message, traceID string) {
 	log.Printf("[reason %s] published reason.response, text_count=%d", w.ID(), len(texts))
 }
 
-func (w *Worker) publishReasonStart(traceID string) {
+func (w *Worker) broadcastReasonStart(traceID string) {
 	evt := event.New("reason.start", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 	})
@@ -397,16 +372,26 @@ func (w *Worker) publishReasonStart(traceID string) {
 	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
-func (w *Worker) publishReasonEnd(traceID, stopReason string) {
+// StopReason values for broadcastReasonEnd.
+// LLM provider stop reasons ("stop", "length", "tool_calls", etc.) are passed through as-is.
+type StopReason string
+
+const (
+	StopReasonInterrupted StopReason = "interrupted" // reasoning interrupted mid-stream
+	StopReasonError       StopReason = "error"       // LLM call failed
+	StopReasonAborted     StopReason = "aborted"     // abort received, no reasoning was in flight
+)
+
+func (w *Worker) broadcastReasonEnd(traceID string, stopReason StopReason) {
 	evt := event.New("reason.end", w.ID(), map[string]any{
 		"worker_id":   w.ID(),
-		"stop_reason": stopReason,
+		"stop_reason": string(stopReason),
 	})
 	evt.TraceID = traceID
 	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
-func (w *Worker) publishThinking(blocks []llm.ContentBlock, traceID string) {
+func (w *Worker) broadcastThinking(blocks []llm.ContentBlock, traceID string) {
 	log.Printf("[reason %s] publishing thinking: %d blocks, total %d chars", w.ID(), len(blocks), len(blocks[0].Text))
 	var texts []any
 	for _, b := range blocks {
@@ -419,7 +404,7 @@ func (w *Worker) publishThinking(blocks []llm.ContentBlock, traceID string) {
 	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
-func (w *Worker) publishThinkingDelta(text, traceID string) {
+func (w *Worker) broadcastThinkingDelta(text, traceID string) {
 	evt := event.New("reason.thinking_delta", w.ID(), map[string]any{
 		"delta": text,
 	})
@@ -427,10 +412,26 @@ func (w *Worker) publishThinkingDelta(text, traceID string) {
 	_ = w.Channel.Broadcast(context.Background(), evt)
 }
 
-func (w *Worker) publishTextDelta(text, traceID string) {
+func (w *Worker) broadcastTextDelta(text, traceID string) {
 	evt := event.New("reason.text_delta", w.ID(), map[string]any{
 		"delta": text,
 	})
 	evt.TraceID = traceID
 	_ = w.Channel.Broadcast(context.Background(), evt)
+}
+
+// broadcastErrorAndEnd broadcasts an error response and ends the current reasoning
+// round. Expects w.mu to be held; unlocks it and calls tryReason before returning.
+func (w *Worker) broadcastErrorAndEnd(ctx context.Context, traceID string, err error) {
+	log.Printf("[reason %s] LLM error: %v", w.ID(), err)
+	errEvt := event.New("reason.response", w.ID(), map[string]any{
+		"content":     []any{fmt.Sprintf("Error: %v", err)},
+		"stop_reason": "error",
+	})
+	errEvt.TraceID = traceID
+	_ = w.Channel.Broadcast(context.Background(), errEvt)
+	w.broadcastReasonEnd(traceID, StopReasonError)
+	w.isReasoning = false
+	w.mu.Unlock()
+	w.tryReason(ctx)
 }

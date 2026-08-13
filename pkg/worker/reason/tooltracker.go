@@ -31,16 +31,17 @@ const (
 	ToolParked  ToolReqStatus = "parked"  // no longer awaited; may still return late
 )
 
-// InterruptCause records why a call was parked, so late-result messages can be
+// PreemptCause records why a call was parked, so late-result messages can be
 // framed with the correct context. Also used to track why a reasoning round
-// was interrupted (abort/input preemption).
-type InterruptCause string
+// was interrupted (abort/input preemption) or a new round was triggered
+// (reminder/timeout).
+type PreemptCause string
 
 const (
-	InterruptCauseInput    InterruptCause = "input"    // a new user input preempted the wait
-	InterruptCauseTimeout  InterruptCause = "timeout"  // the batch timeout fired
-	InterruptCauseAbort    InterruptCause = "abort"    // an abort signal ended the call
-	InterruptCauseReminder InterruptCause = "reminder" // an elapse reminder timer fired
+	PreemptCauseInput    PreemptCause = "input"    // a new user input preempted the wait
+	PreemptCauseTimeout  PreemptCause = "timeout"  // the batch timeout fired
+	PreemptCauseAbort    PreemptCause = "abort"    // an abort signal ended the call
+	PreemptCauseReminder PreemptCause = "reminder" // an elapse reminder timer fired
 )
 
 // ToolCall tracks a single tool call through its event-bus lifecycle.
@@ -49,7 +50,7 @@ type ToolCall struct {
 	Name      string
 	TargetID  string // worker the tool.requested was sent to (used for recall)
 	Status    ToolReqStatus
-	ParkCause InterruptCause // meaningful when Status == ToolParked
+	ParkCause PreemptCause // meaningful when Status == ToolParked
 }
 
 // ToolCallTracker manages the lifecycle of tool calls in the pending map.
@@ -112,7 +113,7 @@ func (m *ToolCallTracker) handleResponse(evt event.Event) bool {
 // parkAll marks every still-Pending call as Parked with the given cause and
 // returns them. Parked calls are kept in the tracker so late results can be
 // matched and given context. Already-parked or resolved calls are untouched.
-func (m *ToolCallTracker) parkAll(cause InterruptCause) []*ToolCall {
+func (m *ToolCallTracker) parkAll(cause PreemptCause) []*ToolCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

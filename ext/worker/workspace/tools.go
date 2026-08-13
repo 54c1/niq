@@ -8,7 +8,7 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/worker"
-	backend "github.com/54c1/niq/pkg/service/wsbackend"
+	backend "github.com/54c1/niq/ext/service/wsbackend"
 )
 
 // buildHandlers probes the backend's low-level interfaces and assembles
@@ -141,14 +141,6 @@ func (w *WorkspaceWorker) buildHandlers() {
 			}
 			return backend.FormatLs(entries), nil
 		}
-	}
-
-	// cancel acknowledges a best-effort recall from the reason worker on abort.
-	// Workspace tools run synchronously and cannot be forcibly interrupted, so
-	// this acknowledges receipt. In-flight results may still arrive as late results.
-	m["cancel"] = func(ctx context.Context, args map[string]any) (string, error) {
-		callID, _ := args["call_id"].(string)
-		return fmt.Sprintf("cancel requested for %s (best-effort)", callID), nil
 	}
 
 	w.handlers = m

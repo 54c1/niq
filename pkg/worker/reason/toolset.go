@@ -20,27 +20,32 @@ import (
 )
 
 func (w *Worker) allTools() []worker.Tool {
-	tools := make([]worker.Tool, 0, len(w.tools))
-	for _, t := range w.tools {
+	tools := make([]worker.Tool, 0, len(w.workerTools))
+	for _, t := range w.workerTools {
 		tools = append(tools, t)
 	}
 	return tools
 }
 
-// EventPublish describes a single event type that a worker publishes.
+// EventPublish describes an event type that a worker publishes on the bus.
+// Each worker announces its event types in the worker.ready payload's
+// "publishes" field. The reason worker stores these in w.workerPublishEvents (keyed by
+// worker ID) so the LLM can discover the bus topology via the list_workers
+// tool — knowing which worker emits which events helps the LLM decide where
+// to route messages.
 type EventPublish struct {
 	Type        string `json:"type"`
 	Description string `json:"description"`
 }
 
 // initBuiltinTools adds tools natively handled by this worker (e.g.
-// publish_message, list_workers) to w.tools with Provider set to w.ID()
+// send_message, list_workers) to w.workerTools with Provider set to w.ID()
 // so they route back to self via the bus.
 func (w *Worker) initBuiltinTools() {
 	for _, t := range []worker.Tool{
 		{
-			Name:        "publish_message",
-			Description: "Publish a message to a specific worker on the bus.",
+			Name:        "send_message",
+			Description: "Send a message to a specific worker on the bus.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -60,7 +65,7 @@ func (w *Worker) initBuiltinTools() {
 		},
 	} {
 		t.Provider = w.ID()
-		w.tools[t.Name] = t
+		w.workerTools[t.Name] = t
 	}
 }
 
@@ -82,7 +87,7 @@ func (w *Worker) handleWorkerReady(evt event.Event) {
 					continue
 				}
 				prefixed := workerID + "." + name
-				w.tools[prefixed] = worker.Tool{
+				w.workerTools[prefixed] = worker.Tool{
 					Name:        prefixed,
 					Description: desc,
 					Parameters:  params,
@@ -98,7 +103,7 @@ func (w *Worker) handleWorkerReady(evt event.Event) {
 	if err == nil {
 		var eventsRaw []EventPublish
 		if err := json.Unmarshal(b, &eventsRaw); err == nil && len(eventsRaw) > 0 {
-			w.publishes[workerID] = eventsRaw
+			w.workerPublishEvents[workerID] = eventsRaw
 			log.Printf("[reason %s] received %d event(s) from %s", w.ID(), len(eventsRaw), workerID)
 		}
 	}
@@ -108,12 +113,12 @@ func (w *Worker) handleWorkerReady(evt event.Event) {
 func (w *Worker) handleWorkerGone(evt event.Event) {
 	workerID, _ := evt.Payload["worker_id"].(string)
 
-	for name, tool := range w.tools {
+	for name, tool := range w.workerTools {
 		if tool.Provider == workerID {
-			delete(w.tools, name)
+			delete(w.workerTools, name)
 		}
 	}
-	delete(w.publishes, workerID)
+	delete(w.workerPublishEvents, workerID)
 	log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 }
 
@@ -126,8 +131,8 @@ func (w *Worker) handleToolRequest(evt event.Event) {
 	args, _ := evt.Payload["arguments"].(map[string]any)
 
 	switch toolName {
-	case "publish_message":
-		w.handlePublishMessage(callID, toolName, callerID, args)
+	case "send_message":
+		w.handleSendMessage(callID, toolName, callerID, args)
 	case "list_workers":
 		w.handleListWorkers(callID, toolName, callerID, args)
 	default:
@@ -139,7 +144,7 @@ func (w *Worker) handleToolRequest(evt event.Event) {
 	}
 }
 
-func (w *Worker) handlePublishMessage(callID, toolName, callerID string, args map[string]any) {
+func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[string]any) {
 	target, _ := args["target"].(string)
 	text, _ := args["text"].(string)
 	if target == "" || text == "" {
@@ -157,7 +162,7 @@ func (w *Worker) handlePublishMessage(callID, toolName, callerID string, args ma
 	msgEvt.TraceID = w.currentTraceID
 	_ = w.Channel.Send(context.Background(), msgEvt, target)
 
-	w.publishSuccess(callID, toolName, callerID,
+	w.sendSuccess(callID, toolName, callerID,
 		fmt.Sprintf("message sent to %s", target))
 }
 
@@ -178,12 +183,12 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 	providers := make(map[string]*workerInfo)
 
 	// Collect tools grouped by provider.
-	for _, tool := range w.tools {
+	for _, tool := range w.workerTools {
 		info, ok := providers[tool.Provider]
 		if !ok {
 			info = &workerInfo{
 				WorkerID:  tool.Provider,
-				Publishes: w.publishes[tool.Provider],
+				Publishes: w.workerPublishEvents[tool.Provider],
 			}
 			providers[tool.Provider] = info
 		}
@@ -191,7 +196,7 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 	}
 
 	// Collect providers that only publish events (no tools).
-	for provider, events := range w.publishes {
+	for provider, events := range w.workerPublishEvents {
 		if _, ok := providers[provider]; !ok {
 			providers[provider] = &workerInfo{
 				WorkerID:  provider,
@@ -207,15 +212,15 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 
 	b, err := json.Marshal(result)
 	if err != nil {
-		w.publishFail(callID, toolName, callerID, fmt.Sprintf("marshal error: %v", err))
+		w.sendFail(callID, toolName, callerID, fmt.Sprintf("marshal error: %v", err))
 		return
 	}
 
-	w.publishSuccess(callID, toolName, callerID, string(b))
+	w.sendSuccess(callID, toolName, callerID, string(b))
 	log.Printf("[reason %s] list_workers → %d workers", w.ID(), len(result))
 }
 
-func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
+func (w *Worker) sendSuccess(callID, toolName, callerID, result string) {
 	evt := event.New("tool.completed", w.ID(), map[string]any{
 		"call_id": callID, "name": toolName,
 		"result": result,
@@ -224,7 +229,7 @@ func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
 	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
-func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
+func (w *Worker) sendFail(callID, toolName, callerID, errMsg string) {
 	evt := event.New("tool.failed", w.ID(), map[string]any{
 		"call_id": callID, "name": toolName,
 		"error": errMsg,
@@ -263,10 +268,10 @@ func desanitizeToolName(w *Worker, sane string) string {
 	return sane
 }
 
-// publishToolRequests sends a directed tool.requested event for each tool call
+// sendToolRequests sends a directed tool.requested event for each tool call
 // to its target worker. The tracker only manages the pending map; the caller
 // is responsible for delivering the requests to the bus.
-func (w *Worker) publishToolRequests(target, callerID string, calls []llm.ContentBlock, traceID string) {
+func (w *Worker) sendToolRequests(target, callerID string, calls []llm.ContentBlock, traceID string) {
 	for _, tc := range calls {
 		var argsMap map[string]any
 		if tc.ToolArguments != "" {

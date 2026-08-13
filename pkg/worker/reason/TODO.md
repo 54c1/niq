@@ -1,16 +1,11 @@
-# reason — TODO
+# TODO
 
-记录 reason worker 已知的待办 / 设计后续。
+- [ ] Design a mechanism for reason worker to declare special events in `publishReady()`'s `publishes` field.
+  - Current: `reason.*` events are internal system conventions, not declared in `worker.ready`.
+  - Goal: If a reason worker subclass or extension needs to expose special events for other workers to consume, declare them via `publishes`.
 
-## ✅ 1. 流式打断：保留已产出的内容到 messages (已实现)
-
-**实现**：
-- `reasonCtx.Done()` 分支在 drain 前保存 `thinkingBuf`/`textBuf` 内容，flush 后构建 `llm.Message{Role: RoleAssistant, StopReason: "interrupted"}` 追加到 `w.messages`
-- 由 `watch.go` 中的 `handleAbort`（`w.interruptReason = InterruptCauseAbort`）和 `handleInput`（`w.interruptReason = InterruptCauseInput`）在调用 `cancelReason()` 前设置中断原因
-- `reason()` Phase 3 广播 `reason.interrupted` 事件携带中断原因和保留量
-
-## ✅ 2. 对外广播打断事件的细粒度 (已实现)
-
-**实现**：
-- 新增 `reason.interrupted` 事件，携带 `reason`（abort/input/unknown）、`preserved_chars`、`preserved_text`
-- 在 `reason.end(stop_reason="interrupted")` 之前广播，确保消费者能区分中断场景
+- [ ] Consider whether `timer.reminder` deserves its own `handleReminder` path, or if it should be unified with the generic input handling.
+  - Current: `handleReminder` converts the event to messages, then calls `setImmediateReasoning(InterruptCauseReminder)`. The only difference from `handleInput`'s default path is: (1) it doesn't cancel in-flight reasoning, (2) it uses `InterruptCauseReminder` instead of `InterruptCauseInput` for the park cause.
+  - Observation: The `InterruptCauseReminder` distinction is only used in `parkReason`/`appendLateResult` message text — the LLM would naturally understand the reminder context from the event text itself.
+  - Proposal: Treat `timer.reminder` (and future reminder-like events) as regular input events. The LLM sees the reminder text as a message and understands it naturally. No need for a dedicated handler or interrupt cause — the `input_mode` field already provides the "append vs interrupt" semantics.
+  - Action: Possibly remove `handleReminder` and let `timer.reminder` fall through to `handleInput`, or handle it as `input_mode: "append"`. Remove `InterruptCauseReminder` if no longer needed.

@@ -3,7 +3,6 @@ package reason
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 
 	corebus "github.com/54c1/niq/core/bus"
@@ -23,7 +22,7 @@ type EventConverter struct {
 // Config holds the configuration for a Worker.
 type Config struct {
 	ID              string
-	Handlers        []EventConverter
+	EventConverters []EventConverter
 	Provider        llm.LLMProvider
 	Programs        []program.Program
 	Bus             corebus.WorkerSideChannel
@@ -36,82 +35,74 @@ type Config struct {
 // either a text response or tool calls (all handled uniformly via the bus).
 type Worker struct {
 	worker.BaseWorker
+	mu sync.Mutex
 
-	llmProvider    llm.LLMProvider
-	callTracker    *ToolCallTracker
-	eventConverter []EventConverter
+	llmProvider     llm.LLMProvider
+	toolCallTracker *ToolCallTracker
+	eventConverters []EventConverter
 
-	programs  []program.Program         // loaded programs
-	tools     map[string]worker.Tool    // tools from the bus (worker.ready events)
-	publishes map[string][]EventPublish // events published by each worker (provider → events)
-	// Tool name sanity: maps sanitized name → original name.
-	// LLM API rejects names containing dots; we replace '.' with '_' before
-	// sending and map back when tool calls return.
-	toolNameMap map[string]string
+	reasoningEffort     *string
+	programs            []program.Program
+	workerTools         map[string]worker.Tool    // tools from the bus (worker.ready events)
+	workerPublishEvents map[string][]EventPublish // events published by each worker (provider → events)
+	toolNameMap         map[string]string         // maps sanitized ('.' → '_') name → original tool name
 
-	reasoningEffort *string
-
-	// currentTraceID holds the trace_id from the most recent worker.input.
-	// All events published during this reasoning round propagate this trace_id
-	// so that the frontend can correlate them into a single conversation turn.
-	currentTraceID string
-
-	mu            sync.Mutex
-	started       bool
-	needReason    bool
-	isReasoning   bool
-	activeTimeout string // current round's set_tool_timeout call_id, "" if none
-	messages      []llm.Message
+	started                 bool
+	needReason              bool
+	isReasoning             bool
+	activeTimeout           string       // current round's set_tool_timeout call_id, "" if none
+	interruptReason         PreemptCause // why the current reasoning round was interrupted
+	immediateReasoningCause PreemptCause // why the next reasoning round was triggered; set by setImmediateReasoning, consumed by reason()
+	currentTraceID          string
+	messages                []llm.Message
 
 	cancelReason context.CancelFunc
 	cancelRun    context.CancelFunc
-
-	// interruptReason records why the current reasoning round was interrupted
-	// (InterruptCauseAbort or InterruptCauseInput). Set by the watch loop before
-	// calling cancelReason() so the reason goroutine can read it after the
-	// context is cancelled.
-	interruptReason InterruptCause
 }
 
 // NewWorker creates a Worker from the given configuration.
 func NewWorker(cfg Config) *Worker {
 	// Built-in subscriptions (tool results, worker presence, etc.) come with
-	// their own handlers.
-	// Users can add custom patterns and converters via cfg.Handlers.
-	subs := make([]event.EventPattern, 0, len(cfg.Handlers)+5)
-	for _, h := range cfg.Handlers {
+	// their own handlers. Users can add custom patterns and converters via cfg.Handlers.
+	subs := make([]event.EventPattern, 0, len(cfg.EventConverters)+5)
+	for _, h := range cfg.EventConverters {
 		subs = append(subs, h.Pattern)
 	}
 	subs = append(subs,
 		event.NewPattern("tool.completed"),
 		event.NewPattern("tool.failed"),
 		event.NewPattern("tool.rejected"),
+		event.NewPattern("tool.requested"),
 		event.NewPattern("worker.ready"),
 		event.NewPattern("worker.gone"),
 		event.NewPattern("worker.discover"),
+		event.NewPattern("worker.input"),
 		event.NewPattern("worker.abort"),
 		event.NewPattern("timer.timeout"),
 		event.NewPattern("timer.reminder"),
-		event.NewPattern("worker.input"),
-		event.NewPattern("tool.requested"),
 		event.NewPattern("decision.made"),
 	)
 
-	// Programs are used as-is (inline content). Lazy loading via Program
-	// Worker is handled at runtime through program.load tool calls.
-
 	w := &Worker{
-		BaseWorker:      worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
-		llmProvider:     cfg.Provider,
-		callTracker:     NewToolCallTracker(),
-		eventConverter:  cfg.Handlers,
-		tools:           make(map[string]worker.Tool),
-		publishes:       make(map[string][]EventPublish),
-		programs:        cfg.Programs,
-		toolNameMap:     make(map[string]string),
-		reasoningEffort: cfg.ReasoningEffort,
+		BaseWorker:          worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
+		llmProvider:         cfg.Provider,
+		toolCallTracker:     NewToolCallTracker(),
+		eventConverters:     cfg.EventConverters,
+		workerTools:         make(map[string]worker.Tool),
+		workerPublishEvents: make(map[string][]EventPublish),
+		programs:            cfg.Programs,
+		toolNameMap:         make(map[string]string),
+		reasoningEffort: func() *string {
+			if cfg.ReasoningEffort != nil {
+				return cfg.ReasoningEffort
+			}
+			d := "medium"
+			return &d
+		}(),
 	}
+
 	w.initBuiltinTools()
+
 	return w
 }
 
@@ -122,31 +113,21 @@ func (w *Worker) Start(ctx context.Context) error {
 	defer w.mu.Unlock()
 
 	if w.started {
-		return fmt.Errorf("llmworker %s: already started", w.ID())
+		return fmt.Errorf("reason %s: already started", w.ID())
 	}
 
+	// context
 	runCtx, cancelFn := context.WithCancel(ctx)
 	w.cancelRun = cancelFn
 
-	// Subscribe and receive from the bus
+	// Receive from the bus
 	busCh, _ := w.Channel.Receive(runCtx)
 	go w.watch(runCtx, busCh)
 
 	// Announce presence so other workers can discover this one.
-	log.Printf("[llmworker %s] publishing worker.ready", w.ID())
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
-		"worker_id": w.ID(),
-		"type":      "reason",
-		"publishes": []map[string]any{
-			{"type": "reason.response", "description": "Reasoning result text response"},
-			{"type": "reason.thinking", "description": "Reasoning thinking process"},
-			{"type": "reason.interrupted", "description": "Reasoning interrupted (abort/input) with preserved content"},
-			{"type": "reason.start", "description": "Reasoning round started"},
-			{"type": "reason.end", "description": "Reasoning round ended"},
-		},
-	}))
+	w.broadcastReady()
 
-	// Publish worker.discover to trigger other Workers already on the bus
+	// Broadcast worker.discover to trigger other Workers already on the bus
 	// to re-announce their capabilities via worker.ready.
 	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), map[string]any{
 		"worker_id": w.ID(),
@@ -157,17 +138,10 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 // publishReady re-announces this worker's presence on the bus.
-func (w *Worker) publishReady() {
+func (w *Worker) broadcastReady() {
 	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
-		"publishes": []map[string]any{
-			{"type": "reason.response", "description": "Reasoning result text response"},
-			{"type": "reason.thinking", "description": "Reasoning thinking process"},
-			{"type": "reason.interrupted", "description": "Reasoning interrupted (abort/input) with preserved content"},
-			{"type": "reason.start", "description": "Reasoning round started"},
-			{"type": "reason.end", "description": "Reasoning round ended"},
-		},
 	}))
 }
 

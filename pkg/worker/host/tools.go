@@ -10,11 +10,11 @@ import (
 	"github.com/54c1/niq/core/event"
 	programpkg "github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
+	"github.com/54c1/niq/ext/service/wsbackend"
+	"github.com/54c1/niq/ext/worker/workspace"
 	"github.com/54c1/niq/pkg/helper/openai"
 	inprocess "github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
-	"github.com/54c1/niq/pkg/service/wsbackend"
 	"github.com/54c1/niq/pkg/worker/reason"
-	"github.com/54c1/niq/pkg/worker/workspace"
 )
 
 func (w *HostWorker) handleToolCall(evt event.Event) {
@@ -33,11 +33,6 @@ func (w *HostWorker) handleToolCall(evt event.Event) {
 		result, err = w.handleSpawn(args)
 	case "destroy":
 		result, err = w.handleDestroy(args)
-	case "cancel":
-		// Best-effort recall acknowledgment. Spawned workers run independently;
-		// cancelling them mid-flight is not guaranteed.
-		callID, _ := args["call_id"].(string)
-		result = fmt.Sprintf("cancel requested for %s (best-effort)", callID)
 	default:
 		err = fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -151,9 +146,9 @@ func (w *HostWorker) spawnReason(args map[string]any) (string, error) {
 				BaseURL: "https://api.deepseek.com/v1",
 				Model:   "deepseek-v4-flash",
 			}),
-			Programs: programs,
-			Handlers: events,
-			Bus:      childCh,
+			Programs:        programs,
+			EventConverters: events,
+			Bus:             childCh,
 		})
 	})
 	if err != nil {

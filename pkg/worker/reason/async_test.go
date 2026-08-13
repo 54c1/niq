@@ -80,8 +80,25 @@ func (p *blockingProvider) Complete(ctx context.Context, _ *llm.CompletionReques
 		Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}},
 	}}, nil
 }
-func (p *blockingProvider) CompleteStream(context.Context, *llm.CompletionRequest) (*llm.EventStream, error) {
-	return nil, nil
+func (p *blockingProvider) CompleteStream(ctx context.Context, _ *llm.CompletionRequest) (*llm.EventStream, error) {
+	p.once.Do(func() { close(p.started) })
+
+	es := llm.NewEventStream()
+	go func() {
+		select {
+		case <-ctx.Done():
+			es.Abort(ctx.Err())
+		case <-p.release:
+			es.Push(llm.EventTextStart{})
+			es.Push(llm.EventTextDelta{Delta: "hi"})
+			es.Push(llm.EventTextEnd{})
+			es.End(llm.Message{
+				Role: llm.RoleAssistant, StopReason: "stop",
+				Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}},
+			})
+		}
+	}()
+	return es, nil
 }
 func (p *blockingProvider) ListModels(context.Context) ([]llm.ModelInfo, error) { return nil, nil }
 

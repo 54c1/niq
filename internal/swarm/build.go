@@ -13,19 +13,19 @@ import (
 	"github.com/54c1/niq/core/llm"
 	programpkg "github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
+	"github.com/54c1/niq/ext/service/pgbackend"
+	"github.com/54c1/niq/ext/service/wsbackend"
+	"github.com/54c1/niq/ext/worker/workspace"
 	"github.com/54c1/niq/pkg/helper/openai"
 	"github.com/54c1/niq/pkg/service/eventbus"
 	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
 	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
-	"github.com/54c1/niq/pkg/service/pgbackend"
 	"github.com/54c1/niq/pkg/service/workerhost"
-	"github.com/54c1/niq/pkg/service/wsbackend"
 	"github.com/54c1/niq/pkg/worker/hiw"
 	"github.com/54c1/niq/pkg/worker/host"
 	programworker "github.com/54c1/niq/pkg/worker/program"
 	"github.com/54c1/niq/pkg/worker/reason"
 	"github.com/54c1/niq/pkg/worker/timer"
-	"github.com/54c1/niq/pkg/worker/workspace"
 )
 
 // BuildContext holds shared dependencies that worker factories need.
@@ -120,7 +120,6 @@ func buildReason(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, erro
 	}
 
 	provider := resolveProvider(cfg)
-	reasoningEffort := "medium"
 
 	var programs []programpkg.Program
 	if cfg.Instruction != "" {
@@ -137,11 +136,10 @@ func buildReason(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, erro
 
 	return reason.NewWorker(reason.Config{
 		ID:              cfg.ID,
-		Handlers:        handlers,
+		EventConverters: handlers,
 		Provider:        provider,
 		Programs:        programs,
 		Bus:             client,
-		ReasoningEffort: &reasoningEffort,
 	}), nil
 }
 
@@ -265,5 +263,3 @@ func resolveProvider(cfg WorkerConfig) llm.LLMProvider {
 		Model:   model,
 	})
 }
-
-
