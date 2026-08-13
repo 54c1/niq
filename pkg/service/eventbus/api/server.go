@@ -9,15 +9,17 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/pkg/service/eventbus"
 )
 
 // Server serves the bus event API over HTTP.
 //
 // Endpoints:
-//   GET /api/stream?worker=&trace=&type=&limit=  — SSE real-time + history
-//   GET /api/events/before/{id}?worker=&trace=&limit=  — historical pagination
-//   GET /api/workers  — list online workers
+//
+//	GET /api/stream?worker=&trace=&type=&limit=  — SSE real-time + history
+//	GET /api/events/before/{id}?worker=&trace=&limit=  — historical pagination
+//	GET /api/workers  — list online workers
 type Server struct {
 	log    *EventLog
 	engine *eventbus.Engine
@@ -79,7 +81,7 @@ func (s *Server) handleStream(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	filter := Filter{
 		WorkerID: r.URL.Query().Get("worker"),
 		TraceID:  r.URL.Query().Get("trace"),
-		Type:     r.URL.Query().Get("type"),
+		Type:     event.EventType(r.URL.Query().Get("type")),
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
@@ -110,7 +112,7 @@ func (s *Server) handleLoadBefore(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	filter := Filter{
 		WorkerID: r.URL.Query().Get("worker"),
 		TraceID:  r.URL.Query().Get("trace"),
-		Type:     r.URL.Query().Get("type"),
+		Type:     event.EventType(r.URL.Query().Get("type")),
 	}
 
 	events, err := s.log.LoadBefore(r.Context(), filter, anchor, limit)

@@ -69,15 +69,15 @@ func NewWorker(cfg Config) *Worker {
 		subs = append(subs, h.Pattern)
 	}
 	subs = append(subs,
-		event.NewPattern("tool.completed"),
-		event.NewPattern("tool.failed"),
-		event.NewPattern("tool.rejected"),
-		event.NewPattern("tool.requested"),
-		event.NewPattern("worker.ready"),
-		event.NewPattern("worker.gone"),
-		event.NewPattern("worker.discover"),
-		event.NewPattern("worker.input"),
-		event.NewPattern("worker.abort"),
+		event.NewPattern(event.TypeToolCompleted),
+		event.NewPattern(event.TypeToolFailed),
+		event.NewPattern(event.TypeToolRejected),
+		event.NewPattern(event.TypeToolRequested),
+		event.NewPattern(event.TypeWorkerReady),
+		event.NewPattern(event.TypeWorkerGone),
+		event.NewPattern(event.TypeWorkerDiscover),
+		event.NewPattern(event.TypeWorkerInput),
+		event.NewPattern(event.TypeWorkerAbort),
 		event.NewPattern("timer.timeout"),
 		event.NewPattern("timer.reminder"),
 	)
@@ -128,7 +128,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// Broadcast worker.discover to trigger other Workers already on the bus
 	// to re-announce their capabilities via worker.ready.
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerDiscover, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 	}))
 
@@ -138,7 +138,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 // publishReady re-announces this worker's presence on the bus.
 func (w *Worker) broadcastReady() {
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
 	}))

@@ -102,7 +102,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request) {
 	filter := eventbusapi.Filter{
 		WorkerID: r.URL.Query().Get("worker"),
 		TraceID:  r.URL.Query().Get("trace"),
-		Type:     r.URL.Query().Get("type"),
+		Type:     event.EventType(r.URL.Query().Get("type")),
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
@@ -165,7 +165,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 
-	evt := event.New("worker.abort", "hiw", map[string]any{
+	evt := event.New(event.TypeWorkerAbort, "hiw", map[string]any{
 		"worker_id": "hiw",
 	})
 	if body.Target != "" {
@@ -183,7 +183,7 @@ func (s *Server) handleLoadBefore(w http.ResponseWriter, r *http.Request) {
 	filter := eventbusapi.Filter{
 		WorkerID: r.URL.Query().Get("worker"),
 		TraceID:  r.URL.Query().Get("trace"),
-		Type:     r.URL.Query().Get("type"),
+		Type:     event.EventType(r.URL.Query().Get("type")),
 	}
 
 	events, err := s.eventLog.LoadBefore(r.Context(), filter, anchor, limit)

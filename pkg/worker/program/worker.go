@@ -53,8 +53,8 @@ func New(cfg Config) *Worker {
 	}
 	return &Worker{
 		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
-			event.NewPattern("tool.requested"),
-			event.NewPattern("worker.discover"),
+			event.NewPattern(event.TypeToolRequested),
+			event.NewPattern(event.TypeWorkerDiscover),
 		}, cfg.Bus),
 		backend:  cfg.Backend,
 		programs: make(map[string]*program.Program),
@@ -190,11 +190,11 @@ func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 
 func (w *Worker) process(ctx context.Context, evt event.Event) {
 	switch evt.Type {
-	case "worker.discover":
+	case event.TypeWorkerDiscover:
 		if evt.WorkerId != w.ID() {
 			w.publishReady()
 		}
-	case "tool.requested":
+	case event.TypeToolRequested:
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return
 		}
@@ -204,7 +204,7 @@ func (w *Worker) process(ctx context.Context, evt event.Event) {
 
 // publishReady announces this worker's tools on the bus.
 func (w *Worker) publishReady() {
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "program",
 		"tools": []map[string]any{

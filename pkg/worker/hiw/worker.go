@@ -56,7 +56,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// Announce HIW's presence on the bus.
 	w.publishReady()
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), nil))
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerDiscover, w.ID(), nil))
 
 	ch := w.cancelCh
 	go func() {
@@ -97,7 +97,7 @@ func (w *Worker) SendInput(ctx context.Context, text string, target string, mode
 	if mode != "" && mode != "default" {
 		payload["input_mode"] = mode
 	}
-	evt := event.New("worker.input", w.ID(), payload)
+	evt := event.New(event.TypeWorkerInput, w.ID(), payload)
 	evt.TraceID = evt.ID
 	if target != "" {
 		return w.Channel.Send(context.Background(), evt, target)
@@ -107,7 +107,7 @@ func (w *Worker) SendInput(ctx context.Context, text string, target string, mode
 
 // publishReady announces HIW on the bus.
 func (w *Worker) publishReady() {
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "hiw",
 		"publishes": []map[string]any{

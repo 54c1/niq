@@ -136,7 +136,7 @@ func (w *Worker) handleToolRequest(evt event.Event) {
 	case "list_workers":
 		w.handleListWorkers(callID, toolName, callerID, args)
 	default:
-		evt := event.New("tool.failed", w.ID(), map[string]any{
+		evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 			"call_id": callID, "name": toolName,
 			"error": fmt.Sprintf("unknown tool: %s", toolName),
 		})
@@ -148,7 +148,7 @@ func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[s
 	target, _ := args["target"].(string)
 	text, _ := args["text"].(string)
 	if target == "" || text == "" {
-		evt := event.New("tool.failed", w.ID(), map[string]any{
+		evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 			"call_id": callID, "name": toolName,
 			"error": "target and text are required",
 		})
@@ -156,7 +156,7 @@ func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[s
 		return
 	}
 
-	msgEvt := event.New("worker.input", w.ID(), map[string]any{
+	msgEvt := event.New(event.TypeWorkerInput, w.ID(), map[string]any{
 		"text": text,
 	})
 	msgEvt.TraceID = w.currentTraceID
@@ -171,7 +171,7 @@ func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[s
 // the cache for the next call.
 func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[string]any) {
 	// Trigger re-discovery so the next call gets fresh data.
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.discover", w.ID(), nil))
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerDiscover, w.ID(), nil))
 
 	// Aggregate tools and publishes by provider.
 	type workerInfo struct {
@@ -221,7 +221,7 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 }
 
 func (w *Worker) sendSuccess(callID, toolName, callerID, result string) {
-	evt := event.New("tool.completed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"call_id": callID, "name": toolName,
 		"result": result,
 	})
@@ -230,7 +230,7 @@ func (w *Worker) sendSuccess(callID, toolName, callerID, result string) {
 }
 
 func (w *Worker) sendFail(callID, toolName, callerID, errMsg string) {
-	evt := event.New("tool.failed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"call_id": callID, "name": toolName,
 		"error": errMsg,
 	})
@@ -277,7 +277,7 @@ func (w *Worker) sendToolRequests(target, callerID string, calls []llm.ContentBl
 		if tc.ToolArguments != "" {
 			json.Unmarshal([]byte(tc.ToolArguments), &argsMap)
 		}
-		evt := event.New("tool.requested", callerID, map[string]any{
+		evt := event.New(event.TypeToolRequested, callerID, map[string]any{
 			"worker_id": callerID,
 			"call_id":   tc.ToolCallID,
 			"name":      tc.ToolName,

@@ -222,7 +222,7 @@ func (w *Worker) handleDelete(ctx context.Context, callID, callerID string, args
 // ── Helpers ──
 
 func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
-	evt := event.New("tool.completed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"result":  result,
@@ -231,7 +231,7 @@ func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
 }
 
 func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
-	evt := event.New("tool.failed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"error":   errMsg,

@@ -21,21 +21,23 @@ import (
 
 // isToolResultEvent reports whether the given event type is a tool
 // lifecycle event consumed by the LLM worker.
-func isToolResultEvent(typ string) bool {
-	return typ == "tool.completed" || typ == "tool.failed" || typ == "tool.rejected"
+func isToolResultEvent(typ event.EventType) bool {
+	return typ == event.TypeToolCompleted || typ == event.TypeToolFailed || typ == event.TypeToolRejected
 }
 
 // typeMatches reports whether an event type matches a subscription pattern.
 // Supports exact match, "*" (any), and "Prefix.*" prefix wildcards.
-func typeMatches(pattern, eventType string) bool {
-	if pattern == "" || pattern == "*" {
+func typeMatches(pattern, eventType event.EventType) bool {
+	p := string(pattern)
+	et := string(eventType)
+	if p == "" || p == "*" {
 		return true
 	}
-	if pattern == eventType {
+	if p == et {
 		return true
 	}
-	if prefix, ok := strings.CutSuffix(pattern, ".*"); ok {
-		return eventType == prefix || strings.HasPrefix(eventType, prefix+".")
+	if prefix, ok := strings.CutSuffix(p, ".*"); ok {
+		return et == prefix || strings.HasPrefix(et, prefix+".")
 	}
 	return false
 }
@@ -129,15 +131,15 @@ func failMessage(callID, name, reason string) llm.Message {
 // tool result event. Used by both the normal-resolution and late-result paths.
 func resultOutcome(evt event.Event) (string, bool) {
 	switch evt.Type {
-	case "tool.completed":
+	case event.TypeToolCompleted:
 		if r, ok := evt.Payload["result"]; ok {
 			return fmt.Sprintf("%v", r), false
 		}
-	case "tool.failed":
+	case event.TypeToolFailed:
 		if e, ok := evt.Payload["error"]; ok {
 			return "Tool call failed: " + fmt.Sprintf("%v", e), true
 		}
-	case "tool.rejected":
+	case event.TypeToolRejected:
 		if r, ok := evt.Payload["reason"]; ok {
 			return "Tool call rejected: " + fmt.Sprintf("%v", r), true
 		}

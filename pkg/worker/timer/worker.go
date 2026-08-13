@@ -35,8 +35,8 @@ func New(cfg Config) *Worker {
 	}
 	return &Worker{
 		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
-			event.NewPattern("tool.requested"),
-			event.NewPattern("worker.discover"),
+			event.NewPattern(event.TypeToolRequested),
+			event.NewPattern(event.TypeWorkerDiscover),
 		}, cfg.Bus),
 		timers: make(map[string]*Entry),
 	}
@@ -90,9 +90,9 @@ func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 
 func (w *Worker) process(evt event.Event) {
 	switch evt.Type {
-	case "worker.discover":
+	case event.TypeWorkerDiscover:
 		w.publishReady()
-	case "tool.requested":
+	case event.TypeToolRequested:
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return
 		}
@@ -183,7 +183,7 @@ func (w *Worker) handleCancel(callID, toolName, callerID string, args map[string
 }
 
 func (w *Worker) publishReady() {
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "timer",
 		"tools": []map[string]any{{
@@ -229,7 +229,7 @@ func (w *Worker) publishReady() {
 }
 
 func (w *Worker) publishCompleted(callerID, callID, toolName, result, traceID string) {
-	evt := event.New("tool.completed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"result":  result,
@@ -239,7 +239,7 @@ func (w *Worker) publishCompleted(callerID, callID, toolName, result, traceID st
 }
 
 func (w *Worker) publishFailed(callerID, callID, toolName string, err error, traceID string) {
-	evt := event.New("tool.failed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"error":   err.Error(),

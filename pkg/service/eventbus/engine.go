@@ -24,11 +24,11 @@ import (
 // Engine has no goroutines. It is a data structure with methods, called
 // by the Attach/watch goroutines or by control-plane code.
 type Engine struct {
-	mu        sync.RWMutex
-	channels  map[string]corebus.BusSideChannel
-	registry  corebus.IdentityRegistry
-	store     store.AppendStore // optional, nil to disable persistence
-	onEvent   []func(event.Event) // optional hooks, called for every routed event
+	mu       sync.RWMutex
+	channels map[string]corebus.BusSideChannel
+	registry corebus.IdentityRegistry
+	store    store.AppendStore   // optional, nil to disable persistence
+	onEvent  []func(event.Event) // optional hooks, called for every routed event
 }
 
 // NewEngine creates a new Engine.
@@ -185,20 +185,20 @@ func (e *Engine) Lookup(workerID string) (corebus.Identity, bool) {
 
 // patternMatchesAny reports whether the event type matches any of the patterns.
 // Supports exact match, "*", and "Prefix.*" wildcards.
-func patternMatchesAny(eventType string, patterns []string) bool {
+func patternMatchesAny(eventType event.EventType, patterns []string) bool {
+	et := string(eventType)
 	for _, p := range patterns {
-		if p == "*" || p == eventType {
+		if p == "*" || p == et {
 			return true
 		}
 		// Prefix match: "github.*" matches "github.issue.new"
 		if len(p) > 2 && p[len(p)-2:] == ".*" {
 			prefix := p[:len(p)-2]
-			if len(eventType) >= len(prefix) && eventType[:len(prefix)] == prefix &&
-				(len(eventType) == len(prefix) || eventType[len(prefix)] == '.') {
+			if len(et) >= len(prefix) && et[:len(prefix)] == prefix &&
+				(len(et) == len(prefix) || et[len(prefix)] == '.') {
 				return true
 			}
 		}
 	}
 	return false
 }
-

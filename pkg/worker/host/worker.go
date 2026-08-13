@@ -50,9 +50,9 @@ func New(cfg Config) *HostWorker {
 	}
 	return &HostWorker{
 		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
-			event.NewPattern("tool.requested"),
-			event.NewPattern("tool.cancel"),
-			event.NewPattern("worker.discover"),
+			event.NewPattern(event.TypeToolRequested),
+			event.NewPattern(event.TypeToolCancel),
+			event.NewPattern(event.TypeWorkerDiscover),
 		}, cfg.Bus),
 		registry: cfg.Registry,
 		listener: cfg.Listener,
@@ -117,14 +117,14 @@ func (w *HostWorker) watch(ctx context.Context, busCh <-chan event.Event) {
 
 func (w *HostWorker) process(evt event.Event) {
 	switch evt.Type {
-	case "worker.discover":
+	case event.TypeWorkerDiscover:
 		if evt.WorkerId != w.ID() {
 			w.publishReady()
 		}
-	case "tool.cancel":
+	case event.TypeToolCancel:
 		callID, _ := evt.Payload["call_id"].(string)
 		log.Printf("[host %s] cancel requested for %s (best-effort)", w.ID(), callID)
-	case "tool.requested":
+	case event.TypeToolRequested:
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return
 		}

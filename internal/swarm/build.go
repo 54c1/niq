@@ -105,7 +105,7 @@ func buildReason(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, erro
 	for _, s := range subs {
 		pat := s
 		handlers = append(handlers, reason.EventConverter{
-			Pattern: event.NewPattern(pat),
+			Pattern: event.NewPattern(event.EventType(pat)),
 			Converter: func(evt event.Event) []llm.Message {
 				text, _ := evt.Payload["text"].(string)
 				if text == "" {

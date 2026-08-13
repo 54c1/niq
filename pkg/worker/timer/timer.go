@@ -36,9 +36,9 @@ func afterFunc(
 	})
 
 	t := time.AfterFunc(time.Duration(durationMS)*time.Millisecond, func() {
-		eventType := "timer.timeout"
+		eventType := event.EventType("timer.timeout")
 		if tickType == "reminder" {
-			eventType = "timer.reminder"
+			eventType = event.EventType("timer.reminder")
 		}
 		evt := event.New(eventType, workerID, map[string]any{
 			"timer_id":  timerID,

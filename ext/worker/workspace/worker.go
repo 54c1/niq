@@ -43,9 +43,9 @@ type WorkspaceWorker struct {
 
 func New(cfg Config) *WorkspaceWorker {
 	subs := []event.EventPattern{
-		event.NewPattern("tool.requested"),
-		event.NewPattern("tool.cancel"),
-		event.NewPattern("worker.discover"),
+		event.NewPattern(event.TypeToolRequested),
+		event.NewPattern(event.TypeToolCancel),
+		event.NewPattern(event.TypeWorkerDiscover),
 	}
 	return &WorkspaceWorker{
 		BaseWorker: worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
@@ -103,12 +103,12 @@ func (w *WorkspaceWorker) watch(ctx context.Context, busCh <-chan event.Event) {
 
 func (w *WorkspaceWorker) process(ctx context.Context, evt event.Event) {
 	switch evt.Type {
-	case "worker.discover":
+	case event.TypeWorkerDiscover:
 		w.publishReady()
-	case "tool.cancel":
+	case event.TypeToolCancel:
 		callID, _ := evt.Payload["call_id"].(string)
 		log.Printf("[workspace %s] cancel requested for %s (best-effort)", w.ID(), callID)
-	case "tool.requested":
+	case event.TypeToolRequested:
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return
 		}

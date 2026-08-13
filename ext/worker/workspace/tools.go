@@ -165,7 +165,7 @@ func (w *WorkspaceWorker) handleToolCall(ctx context.Context, evt event.Event) {
 	}
 
 	ctx = backend.WithOnUpdate(ctx, func(partial string) {
-		evt := event.New("tool.partial", w.ID(), map[string]any{
+		evt := event.New(event.TypeToolPartial, w.ID(), map[string]any{
 			"worker_id": callerID,
 			"call_id":   callID,
 			"name":      name,
@@ -187,7 +187,7 @@ func (w *WorkspaceWorker) handleToolCall(ctx context.Context, evt event.Event) {
 // ── Bus publishing ──
 
 func (w *WorkspaceWorker) publishCompleted(callerID, callID, toolName, result, traceID string) {
-	evt := event.New("tool.completed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"worker_id": callerID,
 		"call_id":   callID,
 		"name":      toolName,
@@ -199,7 +199,7 @@ func (w *WorkspaceWorker) publishCompleted(callerID, callID, toolName, result, t
 }
 
 func (w *WorkspaceWorker) publishFailed(callerID, callID, toolName string, err error, traceID string) {
-	evt := event.New("tool.failed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"worker_id": callerID,
 		"call_id":   callID,
 		"name":      toolName,
@@ -331,7 +331,7 @@ func (w *WorkspaceWorker) publishReady() {
 		})
 	}
 
-	evt := event.New("worker.ready", w.ID(), map[string]any{
+	evt := event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "workspace",
 		"tools":     ts,

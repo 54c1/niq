@@ -137,7 +137,7 @@ func TestAsyncAbortInterruptsReasoning(t *testing.T) {
 	prov := &blockingProvider{started: make(chan struct{}), release: make(chan struct{})}
 	_, ch, _ := startWorker(t, prov)
 
-	ch.in <- event.New("worker.input", "hiw", map[string]any{"text": "hello", "input_mode": "default"})
+	ch.in <- event.New(event.TypeWorkerInput, "hiw", map[string]any{"text": "hello", "input_mode": "default"})
 	waitCond(t, 2*time.Second, func() bool {
 		select {
 		case <-prov.started:
@@ -149,7 +149,7 @@ func TestAsyncAbortInterruptsReasoning(t *testing.T) {
 
 	// Feed an abort while reasoning is blocked. Because reason() is async, the
 	// watch loop processes it immediately and cancelReason interrupts the call.
-	ch.in <- event.New("worker.abort", "swarm", map[string]any{})
+	ch.in <- event.New(event.TypeWorkerAbort, "swarm", map[string]any{})
 	waitCond(t, 2*time.Second, ch.hasInterrupted, "reason.end(interrupted)")
 }
 
@@ -159,7 +159,7 @@ func TestAsyncNoFakeErrorOnInterrupt(t *testing.T) {
 	prov := &blockingProvider{started: make(chan struct{}), release: make(chan struct{})}
 	_, ch, _ := startWorker(t, prov)
 
-	ch.in <- event.New("worker.input", "hiw", map[string]any{"text": "hello", "input_mode": "default"})
+	ch.in <- event.New(event.TypeWorkerInput, "hiw", map[string]any{"text": "hello", "input_mode": "default"})
 	waitCond(t, 2*time.Second, func() bool {
 		select {
 		case <-prov.started:
@@ -168,7 +168,7 @@ func TestAsyncNoFakeErrorOnInterrupt(t *testing.T) {
 			return false
 		}
 	}, "reasoning to start")
-	ch.in <- event.New("worker.abort", "swarm", map[string]any{})
+	ch.in <- event.New(event.TypeWorkerAbort, "swarm", map[string]any{})
 	waitCond(t, 2*time.Second, ch.hasInterrupted, "reason.end(interrupted)")
 
 	if ch.hasErrorResponse() {

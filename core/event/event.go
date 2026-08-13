@@ -8,6 +8,31 @@ import (
 	"time"
 )
 
+// EventType identifies an event's type on the bus.
+type EventType string
+
+// Universal bus protocol event types. Every worker must use these exact
+// names to interoperate — a worker implementing a capability must publish/
+// subscribe with the matching event type. Worker-specific domain events
+// (e.g. reason.*, timer.*) are not listed here; they are defined by their
+// owning worker.
+const (
+	// Worker presence and lifecycle.
+	TypeWorkerReady    EventType = "worker.ready"
+	TypeWorkerGone     EventType = "worker.gone"
+	TypeWorkerDiscover EventType = "worker.discover"
+	TypeWorkerInput    EventType = "worker.input"
+	TypeWorkerAbort    EventType = "worker.abort"
+
+	// Tool invocation lifecycle.
+	TypeToolRequested EventType = "tool.requested"
+	TypeToolCancel    EventType = "tool.cancel"
+	TypeToolCompleted EventType = "tool.completed"
+	TypeToolFailed    EventType = "tool.failed"
+	TypeToolRejected  EventType = "tool.rejected"
+	TypeToolPartial   EventType = "tool.partial"
+)
+
 // EventStatus represents an event's lifecycle stage.
 type EventStatus string
 
@@ -21,18 +46,18 @@ const (
 type EventPattern struct {
 	// Type is the event type to match.
 	// Supports exact match, "*" (any), and "Prefix.*" (prefix) wildcards.
-	Type string
+	Type EventType
 }
 
 // NewPattern is a convenience constructor for the common single-type case.
-func NewPattern(typ string) EventPattern {
+func NewPattern(typ EventType) EventPattern {
 	return EventPattern{Type: typ}
 }
 
 // Event is the core data unit of the niq event bus.
 type Event struct {
 	ID             string         `json:"id"`
-	Type           string         `json:"type"`
+	Type           EventType      `json:"type"`
 	Status         EventStatus    `json:"status"`
 	Payload        map[string]any `json:"payload"`
 	WorkerId       string         `json:"worker_id"`
@@ -45,7 +70,7 @@ type Event struct {
 }
 
 // New creates a new Event with defaults.
-func New(typ, workerId string, payload map[string]any) Event {
+func New(typ EventType, workerId string, payload map[string]any) Event {
 	return Event{
 		ID:          newID(),
 		Type:        typ,

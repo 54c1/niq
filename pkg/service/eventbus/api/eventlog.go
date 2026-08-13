@@ -18,9 +18,9 @@ import (
 
 // Filter controls which events a subscriber receives.
 type Filter struct {
-	WorkerID string // filter by source or target worker ID
-	TraceID  string // filter by trace ID
-	Type     string // filter by event type (exact match)
+	WorkerID string          // filter by source or target worker ID
+	TraceID  string          // filter by trace ID
+	Type     event.EventType // filter by event type (exact match)
 }
 
 // matchesFilter checks whether an event satisfies the filter.
@@ -56,9 +56,9 @@ type subscriber struct {
 // EventLog provides real-time event streaming and historical query.
 // It attaches to an Engine via Hook and provides the data source for the API server.
 type EventLog struct {
-	engine     *eventbus.Engine
-	store      store.EventStore
-	mu         sync.Mutex
+	engine      *eventbus.Engine
+	store       store.EventStore
+	mu          sync.Mutex
 	subscribers []*subscriber
 }
 

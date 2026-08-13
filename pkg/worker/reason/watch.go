@@ -69,23 +69,23 @@ func (w *Worker) process(_ context.Context, evt event.Event) {
 	log.Printf("[reason %s] event: %s (from=%s)", w.ID(), evt.Type, evt.WorkerId)
 
 	switch {
-	case evt.Type == "worker.discover":
+	case evt.Type == event.TypeWorkerDiscover:
 		if evt.WorkerId != w.ID() {
 			w.broadcastReady()
 		}
-	case evt.Type == "worker.abort":
+	case evt.Type == event.TypeWorkerAbort:
 		w.handleAbort(evt)
 	case evt.Type == "timer.timeout":
 		w.handleTimeout(evt)
 	case evt.Type == "timer.reminder":
 		w.handleReminder(evt)
-	case evt.Type == "worker.ready":
+	case evt.Type == event.TypeWorkerReady:
 		w.handleWorkerReady(evt)
-	case evt.Type == "worker.gone":
+	case evt.Type == event.TypeWorkerGone:
 		w.handleWorkerGone(evt)
 	case isToolResultEvent(evt.Type):
 		w.handleToolResult(evt)
-	case evt.Type == "tool.requested":
+	case evt.Type == event.TypeToolRequested:
 		w.handleToolRequest(evt)
 	default:
 		w.handleInput(evt)
@@ -212,7 +212,7 @@ func (w *Worker) recallToolCalls(tcs []*ToolCall) {
 
 	for target, callIDs := range byTarget {
 		for _, callID := range callIDs {
-			evt := event.New("tool.cancel", w.ID(), map[string]any{
+			evt := event.New(event.TypeToolCancel, w.ID(), map[string]any{
 				"call_id": callID,
 			})
 			evt.TraceID = w.currentTraceID
@@ -293,7 +293,7 @@ func (w *Worker) cancelTimeout() {
 
 	// Send cancel event
 	timerID := w.activeTimeout
-	evt := event.New("tool.cancel", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCancel, w.ID(), map[string]any{
 		"call_id":  timerID + "-cancel",
 		"timer_id": timerID,
 	})

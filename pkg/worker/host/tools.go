@@ -242,7 +242,7 @@ func parseEvents(args map[string]any) []reason.EventConverter {
 			continue
 		}
 		handlers = append(handlers, reason.EventConverter{
-			Pattern:   event.NewPattern(evtType),
+			Pattern:   event.NewPattern(event.EventType(evtType)),
 			Converter: reason.DefaultConverter,
 		})
 	}
@@ -261,7 +261,7 @@ func (w *HostWorker) handleDestroy(args map[string]any) (string, error) {
 	if err := w.engine.DestroyWorker(workerID); err != nil {
 		return "", err
 	}
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.gone", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerGone, w.ID(), map[string]any{
 		"worker_id": workerID,
 	}))
 	return fmt.Sprintf(`{"worker_id":"%s","status":"destroyed"}`, workerID), nil
@@ -270,7 +270,7 @@ func (w *HostWorker) handleDestroy(args map[string]any) (string, error) {
 // ── Bus publishing ──
 
 func (w *HostWorker) publishReady() {
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "host",
 		"tools": []map[string]any{
@@ -349,7 +349,7 @@ func (w *HostWorker) publishReady() {
 }
 
 func (w *HostWorker) publishCompleted(callerID, callID, toolName, result, traceID string) {
-	evt := event.New("tool.completed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"result":  result,
@@ -359,7 +359,7 @@ func (w *HostWorker) publishCompleted(callerID, callID, toolName, result, traceI
 }
 
 func (w *HostWorker) publishFailed(callerID, callID, toolName string, err error, traceID string) {
-	evt := event.New("tool.failed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"error":   err.Error(),

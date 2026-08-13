@@ -52,9 +52,9 @@ func New(cfg Config) *Worker {
 	}
 	return &Worker{
 		BaseWorker: worker.NewBaseWorker(id, []event.EventPattern{
-			event.NewPattern("tool.requested"),
-			event.NewPattern("tool.cancel"),
-			event.NewPattern("worker.discover"),
+			event.NewPattern(event.TypeToolRequested),
+			event.NewPattern(event.TypeToolCancel),
+			event.NewPattern(event.TypeWorkerDiscover),
 		}, cfg.Bus),
 		client:    c,
 		mcpConfig: cfg.MCPConfig,
@@ -109,12 +109,12 @@ func (w *Worker) watch(ctx context.Context, busCh <-chan event.Event) {
 
 func (w *Worker) process(evt event.Event) {
 	switch evt.Type {
-	case "worker.discover":
+	case event.TypeWorkerDiscover:
 		w.publishReady()
-	case "tool.cancel":
+	case event.TypeToolCancel:
 		callID, _ := evt.Payload["call_id"].(string)
 		log.Printf("[http worker %s] cancel requested for %s (best-effort)", w.ID(), callID)
-	case "tool.requested":
+	case event.TypeToolRequested:
 		if evt.TargetWorkerID != "" && evt.TargetWorkerID != w.ID() {
 			return
 		}
@@ -173,7 +173,7 @@ func (w *Worker) publishReady() {
 			})
 		}
 	}
-	_ = w.Channel.Broadcast(context.Background(), event.New("worker.ready", w.ID(), map[string]any{
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "http",
 		"tools":     tools,
@@ -181,7 +181,7 @@ func (w *Worker) publishReady() {
 }
 
 func (w *Worker) publishCompleted(callerID, callID, toolName, result string) {
-	evt := event.New("tool.completed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"result":  result,
@@ -190,7 +190,7 @@ func (w *Worker) publishCompleted(callerID, callID, toolName, result string) {
 }
 
 func (w *Worker) publishFailed(callerID, callID, toolName string, err error) {
-	evt := event.New("tool.failed", w.ID(), map[string]any{
+	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"call_id": callID,
 		"name":    toolName,
 		"error":   err.Error(),
