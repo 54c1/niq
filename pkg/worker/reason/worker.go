@@ -2,6 +2,7 @@ package reason
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -160,5 +161,43 @@ func (w *Worker) Stop() error {
 	return nil
 }
 
-func (w *Worker) Snapshot() ([]byte, error)  { return nil, nil }
-func (w *Worker) Restore(state []byte) error { return nil }
+// snapshotState is the serializable execution state of a reason worker.
+//
+// Today it captures only the reasoning transcript (messages) — the durable
+// state that survives a suspend/resume or crash recovery. As niq's meta-
+// capabilities grow, more of the worker's state becomes dynamically changeable
+// at runtime rather than fixed at construction (e.g. dynamically-registered
+// programs, tools negotiated at runtime, per-goal context strategies). Such
+// state — once it can mutate outside Config — must be added to snapshotState
+// so it survives a restart too. Restore must stay able to read older blobs
+// (missing fields are simply zero), so extend the struct rather than reshape it.
+type snapshotState struct {
+	Messages []llm.Message `json:"messages"`
+}
+
+// Snapshot captures the worker's durable execution state so it can be resumed
+// later. The only state that cannot be re-derived is the reasoning transcript
+// (messages): tools and published events are re-learned from worker.ready on
+// restart, programs come from Config, and runtime flags (needReason,
+// isReasoning, activeTimeout, ...) are transient and reset on resume. Snapshot
+// is meaningful at an idle point (no in-flight reasoning round).
+func (w *Worker) Snapshot() ([]byte, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return json.Marshal(snapshotState{Messages: w.messages})
+}
+
+// Restore rehydrates the worker from a Snapshot blob, restoring the reasoning
+// transcript. Called after construction and before Start. The worker returns
+// to a clean idle state: tools are re-discovered on Start, and the next input
+// event triggers reasoning.
+func (w *Worker) Restore(state []byte) error {
+	var s snapshotState
+	if err := json.Unmarshal(state, &s); err != nil {
+		return fmt.Errorf("reason %s: restore: %w", w.ID(), err)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.messages = s.Messages
+	return nil
+}

@@ -18,30 +18,26 @@ import (
 )
 
 func (w *HostWorker) handleToolCall(evt event.Event) {
-	callID, _ := evt.Payload["call_id"].(string)
-	toolName, _ := evt.Payload["name"].(string)
-	callerID := evt.WorkerId
-	traceID := evt.TraceID
-
-	args, _ := evt.Payload["arguments"].(map[string]any)
+	tc := worker.ParseToolCall(evt)
 
 	var result string
 	var err error
 
-	switch toolName {
+	switch tc.Name {
 	case "spawn":
-		result, err = w.handleSpawn(args)
+		result, err = w.handleSpawn(tc.Args)
 	case "destroy":
-		result, err = w.handleDestroy(args)
+		result, err = w.handleDestroy(tc.Args)
 	default:
-		err = fmt.Errorf("unknown tool: %s", toolName)
+		w.ReplyUnknownTool(tc)
+		return
 	}
 
 	if err != nil {
-		w.publishFailed(callerID, callID, toolName, err, traceID)
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, err.Error(), tc.TraceID)
 		return
 	}
-	w.publishCompleted(callerID, callID, toolName, result, traceID)
+	w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, result, tc.TraceID)
 }
 
 func (w *HostWorker) handleSpawn(args map[string]any) (string, error) {
@@ -375,26 +371,6 @@ func (w *HostWorker) publishReady() {
 			},
 		},
 	}))
-}
-
-func (w *HostWorker) publishCompleted(callerID, callID, toolName, result, traceID string) {
-	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
-		"call_id": callID,
-		"name":    toolName,
-		"result":  result,
-	})
-	evt.TraceID = traceID
-	_ = w.Channel.Send(context.Background(), evt, callerID)
-}
-
-func (w *HostWorker) publishFailed(callerID, callID, toolName string, err error, traceID string) {
-	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
-		"call_id": callID,
-		"name":    toolName,
-		"error":   err.Error(),
-	})
-	evt.TraceID = traceID
-	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
 func sanitizeID(path string) string {

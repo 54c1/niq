@@ -9,33 +9,31 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/program"
+	"github.com/54c1/niq/core/worker"
 )
 
 // handleToolCall dispatches tool.requested events to the appropriate handler.
 func (w *Worker) handleToolCall(ctx context.Context, evt event.Event) {
-	callID, _ := evt.Payload["call_id"].(string)
-	toolName, _ := evt.Payload["name"].(string)
-	callerID := evt.WorkerId
-	args, _ := evt.Payload["arguments"].(map[string]any)
+	tc := worker.ParseToolCall(evt)
 
-	switch toolName {
+	switch tc.Name {
 	case "program.search":
-		w.handleSearch(ctx, callID, callerID, args)
+		w.handleSearch(ctx, tc)
 	case "program.load":
-		w.handleLoad(ctx, callID, callerID, args)
+		w.handleLoad(ctx, tc)
 	case "program.register":
-		w.handleRegister(ctx, callID, callerID, args)
+		w.handleRegister(ctx, tc)
 	case "program.delete":
-		w.handleDelete(ctx, callID, callerID, args)
+		w.handleDelete(ctx, tc)
 	default:
-		w.publishFail(callID, toolName, callerID, fmt.Sprintf("unknown tool: %s", toolName))
+		w.ReplyUnknownTool(tc)
 	}
 }
 
 // handleSearch handles program.search tool calls.
-func (w *Worker) handleSearch(ctx context.Context, callID, callerID string, args map[string]any) {
-	query, _ := args["query"].(string)
-	ctStr, _ := args["content_type"].(string)
+func (w *Worker) handleSearch(ctx context.Context, tc worker.ToolCall) {
+	query, _ := tc.Args["query"].(string)
+	ctStr, _ := tc.Args["content_type"].(string)
 
 	var ct program.ContentType
 	switch ctStr {
@@ -47,7 +45,7 @@ func (w *Worker) handleSearch(ctx context.Context, callID, callerID string, args
 
 	progs, err := w.search(query, ct)
 	if err != nil {
-		w.publishFail(callID, "program.search", callerID, fmt.Sprintf("search error: %v", err))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("search error: %v", err), tc.TraceID)
 		return
 	}
 
@@ -72,21 +70,21 @@ func (w *Worker) handleSearch(ctx context.Context, callID, callerID string, args
 
 	b, err := json.Marshal(results)
 	if err != nil {
-		w.publishFail(callID, "program.search", callerID, fmt.Sprintf("marshal error: %v", err))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("marshal error: %v", err), tc.TraceID)
 		return
 	}
 
-	w.publishSuccess(callID, "program.search", callerID, string(b))
+	w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, string(b), tc.TraceID)
 	log.Printf("[program] search query=%q ct=%q → %d results", query, ctStr, len(results))
 }
 
 // handleLoad handles program.load tool calls.
-func (w *Worker) handleLoad(ctx context.Context, callID, callerID string, args map[string]any) {
-	progName, _ := args["program"].(string)
-	contentPath, _ := args["path"].(string)
+func (w *Worker) handleLoad(ctx context.Context, tc worker.ToolCall) {
+	progName, _ := tc.Args["program"].(string)
+	contentPath, _ := tc.Args["path"].(string)
 
 	if progName == "" || contentPath == "" {
-		w.publishFail(callID, "program.load", callerID, "program and path are required")
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, "program and path are required", tc.TraceID)
 		return
 	}
 
@@ -94,7 +92,7 @@ func (w *Worker) handleLoad(ctx context.Context, callID, callerID string, args m
 	fullPath := joinPath(progName, contentPath)
 	raw, err := w.backend.Read(ctx, fullPath)
 	if err != nil {
-		w.publishFail(callID, "program.load", callerID, fmt.Sprintf("read %s: %v", fullPath, err))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("read %s: %v", fullPath, err), tc.TraceID)
 		return
 	}
 
@@ -104,7 +102,7 @@ func (w *Worker) handleLoad(ctx context.Context, callID, callerID string, args m
 		raw = body
 	}
 
-	w.publishSuccess(callID, "program.load", callerID, raw)
+	w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, raw, tc.TraceID)
 	log.Printf("[program] load %s/%s → backend (%d chars)", progName, contentPath, len(raw))
 }
 
@@ -112,15 +110,15 @@ func (w *Worker) handleLoad(ctx context.Context, callID, callerID string, args m
 // Programs registered via this tool are always created as unlocked.
 // The Locked flag can only be set through the backend (writing to disk directly)
 // — meta-capabilities cannot create locked programs.
-func (w *Worker) handleRegister(ctx context.Context, callID, callerID string, args map[string]any) {
-	name, _ := args["name"].(string)
-	ctStr, _ := args["content_type"].(string)
-	desc, _ := args["description"].(string)
-	content, _ := args["content"].(string)
+func (w *Worker) handleRegister(ctx context.Context, tc worker.ToolCall) {
+	name, _ := tc.Args["name"].(string)
+	ctStr, _ := tc.Args["content_type"].(string)
+	desc, _ := tc.Args["description"].(string)
+	content, _ := tc.Args["content"].(string)
 
 	// Parse tags from args.
 	var tags []string
-	if tagsRaw, ok := args["tags"].([]any); ok {
+	if tagsRaw, ok := tc.Args["tags"].([]any); ok {
 		for _, t := range tagsRaw {
 			if s, ok := t.(string); ok {
 				tags = append(tags, s)
@@ -129,14 +127,14 @@ func (w *Worker) handleRegister(ctx context.Context, callID, callerID string, ar
 	}
 
 	if name == "" || ctStr == "" || content == "" {
-		w.publishFail(callID, "program.register", callerID, "name, content_type, and content are required")
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, "name, content_type, and content are required", tc.TraceID)
 		return
 	}
 
 	// Check if the program already exists and is locked.
 	if existing, err := w.get(name); err == nil && existing.Locked {
-		w.publishFail(callID, "program.register", callerID,
-			fmt.Sprintf("cannot modify locked program: %q", name))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name,
+			fmt.Sprintf("cannot modify locked program: %q", name), tc.TraceID)
 		return
 	}
 
@@ -147,7 +145,7 @@ func (w *Worker) handleRegister(ctx context.Context, callID, callerID string, ar
 	case "playbook":
 		ct = program.ContentTypePlaybook
 	default:
-		w.publishFail(callID, "program.register", callerID, fmt.Sprintf("invalid content_type: %s", ctStr))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("invalid content_type: %s", ctStr), tc.TraceID)
 		return
 	}
 
@@ -158,7 +156,7 @@ func (w *Worker) handleRegister(ctx context.Context, callID, callerID string, ar
 
 	entryPath := joinPath(name, "PROGRAM.md")
 	if err := w.backend.Write(ctx, entryPath, fullContent); err != nil {
-		w.publishFail(callID, "program.register", callerID, fmt.Sprintf("write failed: %v", err))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("write failed: %v", err), tc.TraceID)
 		return
 	}
 
@@ -173,40 +171,40 @@ func (w *Worker) handleRegister(ctx context.Context, callID, callerID string, ar
 	}
 
 	if err := w.register(prog); err != nil {
-		w.publishFail(callID, "program.register", callerID, fmt.Sprintf("register failed: %v", err))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("register failed: %v", err), tc.TraceID)
 		return
 	}
 
-	w.publishSuccess(callID, "program.register", callerID, fmt.Sprintf("program %q registered", name))
+	w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("program %q registered", name), tc.TraceID)
 	log.Printf("[program] register: %s (%s)", name, ct)
 }
 
 // handleDelete handles program.delete tool calls.
 // Locked programs cannot be deleted via this tool.
-func (w *Worker) handleDelete(ctx context.Context, callID, callerID string, args map[string]any) {
-	name, _ := args["name"].(string)
+func (w *Worker) handleDelete(ctx context.Context, tc worker.ToolCall) {
+	name, _ := tc.Args["name"].(string)
 
 	if name == "" {
-		w.publishFail(callID, "program.delete", callerID, "name is required")
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, "name is required", tc.TraceID)
 		return
 	}
 
 	// Check if the program exists and is locked.
 	existing, err := w.get(name)
 	if err != nil {
-		w.publishFail(callID, "program.delete", callerID, fmt.Sprintf("program %q not found", name))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("program %q not found", name), tc.TraceID)
 		return
 	}
 	if existing.Locked {
-		w.publishFail(callID, "program.delete", callerID,
-			fmt.Sprintf("cannot delete locked program: %q", name))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name,
+			fmt.Sprintf("cannot delete locked program: %q", name), tc.TraceID)
 		return
 	}
 
 	// Remove the program directory from the backend.
 	// We use the program name as the directory path.
 	if err := w.backend.Remove(ctx, name); err != nil {
-		w.publishFail(callID, "program.delete", callerID, fmt.Sprintf("delete failed: %v", err))
+		w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("delete failed: %v", err), tc.TraceID)
 		return
 	}
 
@@ -215,26 +213,6 @@ func (w *Worker) handleDelete(ctx context.Context, callID, callerID string, args
 	delete(w.programs, name)
 	w.pMu.Unlock()
 
-	w.publishSuccess(callID, "program.delete", callerID, fmt.Sprintf("program %q deleted", name))
+	w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, fmt.Sprintf("program %q deleted", name), tc.TraceID)
 	log.Printf("[program] delete: %s", name)
-}
-
-// ── Helpers ──
-
-func (w *Worker) publishSuccess(callID, toolName, callerID, result string) {
-	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
-		"call_id": callID,
-		"name":    toolName,
-		"result":  result,
-	})
-	_ = w.Channel.Send(context.Background(), evt, callerID)
-}
-
-func (w *Worker) publishFail(callID, toolName, callerID, errMsg string) {
-	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
-		"call_id": callID,
-		"name":    toolName,
-		"error":   errMsg,
-	})
-	_ = w.Channel.Send(context.Background(), evt, callerID)
 }

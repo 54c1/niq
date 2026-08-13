@@ -4,53 +4,55 @@ package llm
 type Role string
 
 const (
-	RoleSystem      Role = "system"
-	RoleUser        Role = "user"
-	RoleAssistant   Role = "assistant"
-	RoleToolResult  Role = "tool" // OpenAI-compatible role for tool result messages
+	RoleSystem     Role = "system"
+	RoleUser       Role = "user"
+	RoleAssistant  Role = "assistant"
+	RoleToolResult Role = "tool" // OpenAI-compatible role for tool result messages
 )
 
 // ContentBlockType describes the kind of content in a block.
 type ContentBlockType string
 
 const (
-	ContentText      ContentBlockType = "text"
-	ContentThinking  ContentBlockType = "thinking"
-	ContentToolCall  ContentBlockType = "tool_call"
-	ContentImage     ContentBlockType = "image"
+	ContentText     ContentBlockType = "text"
+	ContentThinking ContentBlockType = "thinking"
+	ContentToolCall ContentBlockType = "tool_call"
+	ContentImage    ContentBlockType = "image"
 )
 
 // ContentBlock is a single piece of content within a Message.
+// JSON tags define the wire format used by worker state snapshots.
 type ContentBlock struct {
-	Type ContentBlockType
+	Type ContentBlockType `json:"type"`
 
 	// Text / thinking content
-	Text      string
-	Redacted  bool   // thinking: whether the content was redacted
-	Signature string // thinking: verification signature
+	Text      string `json:"text,omitempty"`
+	Redacted  bool   `json:"redacted,omitempty"`  // thinking: whether the content was redacted
+	Signature string `json:"signature,omitempty"` // thinking: verification signature
 
 	// Tool call fields
-	ToolCallID   string
-	ToolName     string
-	ToolArguments string // JSON string
+	ToolCallID    string `json:"tool_call_id,omitempty"`
+	ToolName      string `json:"tool_name,omitempty"`
+	ToolArguments string `json:"tool_arguments,omitempty"` // JSON string
 
 	// Image fields
-	Data     string // base64-encoded
-	MIMEType string
+	Data     string `json:"data,omitempty"` // base64-encoded
+	MIMEType string `json:"mime_type,omitempty"`
 }
 
 // Message is a unified message exchanged with the LLM.
+// JSON tags define the wire format used by worker state snapshots.
 type Message struct {
-	Role       Role
-	Content    []ContentBlock
-	Usage      *Usage
-	Cost       *Cost
-	StopReason string // stop / length / tool_calls / error
+	Role       Role           `json:"role"`
+	Content    []ContentBlock `json:"content,omitempty"`
+	Usage      *Usage         `json:"usage,omitempty"`
+	Cost       *Cost          `json:"cost,omitempty"`
+	StopReason string         `json:"stop_reason,omitempty"` // stop / length / tool_calls / error
 
 	// For tool_result messages
-	ToolCallID string
-	ToolName   string
-	IsError    bool
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	IsError    bool   `json:"is_error,omitempty"`
 }
 
 // ToolChoice controls whether and which tool the LLM must call.
@@ -67,27 +69,31 @@ var (
 )
 
 type toolChoiceAuto struct{}
-func (toolChoiceAuto) toolChoiceMarker()     {}
-func (toolChoiceAuto) Code() string          { return "auto" }
+
+func (toolChoiceAuto) toolChoiceMarker() {}
+func (toolChoiceAuto) Code() string      { return "auto" }
 
 type toolChoiceRequired struct{}
-func (toolChoiceRequired) toolChoiceMarker()  {}
-func (toolChoiceRequired) Code() string       { return "required" }
+
+func (toolChoiceRequired) toolChoiceMarker() {}
+func (toolChoiceRequired) Code() string      { return "required" }
 
 type toolChoiceNone struct{}
-func (toolChoiceNone) toolChoiceMarker()      {}
-func (toolChoiceNone) Code() string           { return "none" }
+
+func (toolChoiceNone) toolChoiceMarker() {}
+func (toolChoiceNone) Code() string      { return "none" }
 
 // ToolChoiceNamed forces the LLM to call a specific tool.
 type ToolChoiceNamed struct{ Name string }
-func (ToolChoiceNamed) toolChoiceMarker()     {}
-func (t ToolChoiceNamed) Code() string        { return "function" }
+
+func (ToolChoiceNamed) toolChoiceMarker() {}
+func (t ToolChoiceNamed) Code() string    { return "function" }
 
 // Usage records token counts for a completion.
 type Usage struct {
-	InputTokens      int
-	OutputTokens     int
-	TotalTokens      int
+	InputTokens         int
+	OutputTokens        int
+	TotalTokens         int
 	CacheCreationTokens *int
 	CacheReadTokens     *int
 }

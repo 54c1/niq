@@ -101,54 +101,29 @@ func (w *Worker) process(evt event.Event) {
 }
 
 func (w *Worker) handleToolCall(evt event.Event) {
-	callID, _ := evt.Payload["call_id"].(string)
-	toolName, _ := evt.Payload["name"].(string)
-	callerID := evt.WorkerId
-	args, _ := evt.Payload["arguments"].(map[string]any)
-	traceID := evt.TraceID
+	tc := worker.ParseToolCall(evt)
+	args := tc.Args
 
-	switch toolName {
+	switch tc.Name {
 	case "set_tool_timeout":
 		// set_tool_timeout always uses tool_call_timeout tick_type.
 		args["tick_type"] = "tool_call_timeout"
-		w.handleTickAfter(callID, toolName, callerID, args, traceID)
+		w.handleTickAfter(tc.CallID, tc.Name, tc.CallerID, args, tc.TraceID)
 	case "elapse":
 		// elapse always uses reminder tick_type.
 		args["tick_type"] = "reminder"
-		w.handleTickAfter(callID, toolName, callerID, args, traceID)
+		w.handleTickAfter(tc.CallID, tc.Name, tc.CallerID, args, tc.TraceID)
 	case "cancel":
-		w.handleCancel(callID, toolName, callerID, args, traceID)
+		w.handleCancel(tc.CallID, tc.Name, tc.CallerID, args, tc.TraceID)
 	default:
-		w.publishFailed(callerID, callID, toolName,
-			fmt.Errorf("unknown tool: %s", toolName), traceID)
+		w.ReplyUnknownTool(tc)
 	}
-}
-
-func getIntArg(m map[string]any, key string, defaultVal int) int {
-	v, ok := m[key]
-	if !ok {
-		return defaultVal
-	}
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case int64:
-		return int(n)
-	}
-	return defaultVal
-}
-
-func getStringArg(m map[string]any, key string) string {
-	s, _ := m[key].(string)
-	return s
 }
 
 func (w *Worker) handleTickAfter(callID, toolName, callerID string, args map[string]any, traceID string) {
-	durationMS := getIntArg(args, "duration_ms", 0)
-	purpose := getStringArg(args, "purpose")
-	tickType := getStringArg(args, "tick_type")
+	durationMS := worker.ArgInt(args, "duration_ms", 0)
+	purpose := worker.ArgString(args, "purpose")
+	tickType := worker.ArgString(args, "tick_type")
 
 	w.mu.Lock()
 	w.timers[callID] = afterFunc(w.ID(), w.Channel, callID, callerID,
@@ -160,11 +135,11 @@ func (w *Worker) handleTickAfter(callID, toolName, callerID string, args map[str
 		"purpose":   purpose,
 		"status":    "scheduled",
 	})
-	w.publishCompleted(callerID, callID, toolName, string(result), traceID)
+	w.ReplyCompleted(callerID, callID, toolName, string(result), traceID)
 }
 
 func (w *Worker) handleCancel(callID, toolName, callerID string, args map[string]any, traceID string) {
-	timerID := getStringArg(args, "timer_id")
+	timerID := worker.ArgString(args, "timer_id")
 
 	w.mu.Lock()
 	e, ok := w.timers[timerID]
@@ -175,10 +150,9 @@ func (w *Worker) handleCancel(callID, toolName, callerID string, args map[string
 	w.mu.Unlock()
 
 	if ok {
-		w.publishCompleted(callerID, callID, toolName, `{"status":"cancelled"}`, traceID)
+		w.ReplyCompleted(callerID, callID, toolName, `{"status":"cancelled"}`, traceID)
 	} else {
-		w.publishFailed(callerID, callID, toolName,
-			fmt.Errorf("timer not found: %s", timerID), traceID)
+		w.ReplyFailed(callerID, callID, toolName, "timer not found: "+timerID, traceID)
 	}
 }
 
@@ -226,24 +200,4 @@ func (w *Worker) publishReady() {
 			{"type": "timer.reminder", "description": "An elapse reminder timer has fired"},
 		},
 	}))
-}
-
-func (w *Worker) publishCompleted(callerID, callID, toolName, result, traceID string) {
-	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
-		"call_id": callID,
-		"name":    toolName,
-		"result":  result,
-	})
-	evt.TraceID = traceID
-	_ = w.Channel.Send(context.Background(), evt, callerID)
-}
-
-func (w *Worker) publishFailed(callerID, callID, toolName string, err error, traceID string) {
-	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
-		"call_id": callID,
-		"name":    toolName,
-		"error":   err.Error(),
-	})
-	evt.TraceID = traceID
-	_ = w.Channel.Send(context.Background(), evt, callerID)
 }

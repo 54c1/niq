@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -52,6 +53,32 @@ type EventPattern struct {
 // NewPattern is a convenience constructor for the common single-type case.
 func NewPattern(typ EventType) EventPattern {
 	return EventPattern{Type: typ}
+}
+
+// PatternMatches reports whether an event type matches a subscription pattern.
+// Supports:
+//   - "*"            — matches any event type
+//   - exact match     — e.g. "tool.completed"
+//   - "Prefix.*"      — prefix wildcard, also matches the bare prefix
+//     (e.g. "github.*" matches "github" and "github.issue.new")
+//
+// An empty pattern matches nothing, so an accidental empty subscription fails
+// closed instead of silently matching everything. Use "*" for match-all.
+//
+// This is the single source of truth for subscription matching; both the bus
+// (broadcast routing) and workers (event converter dispatch) use it.
+func PatternMatches(pattern string, eventType EventType) bool {
+	if pattern == "*" {
+		return true
+	}
+	et := string(eventType)
+	if pattern == et {
+		return true
+	}
+	if prefix, ok := strings.CutSuffix(pattern, ".*"); ok {
+		return et == prefix || strings.HasPrefix(et, prefix+".")
+	}
+	return false
 }
 
 // Event is the core data unit of the niq event bus.

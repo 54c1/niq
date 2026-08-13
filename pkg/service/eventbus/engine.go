@@ -184,20 +184,12 @@ func (e *Engine) Lookup(workerID string) (corebus.Identity, bool) {
 }
 
 // patternMatchesAny reports whether the event type matches any of the patterns.
-// Supports exact match, "*", and "Prefix.*" wildcards.
+// Each pattern is matched via event.PatternMatches, the single source of truth
+// for subscription matching.
 func patternMatchesAny(eventType event.EventType, patterns []string) bool {
-	et := string(eventType)
 	for _, p := range patterns {
-		if p == "*" || p == et {
+		if event.PatternMatches(p, eventType) {
 			return true
-		}
-		// Prefix match: "github.*" matches "github.issue.new"
-		if len(p) > 2 && p[len(p)-2:] == ".*" {
-			prefix := p[:len(p)-2]
-			if len(et) >= len(prefix) && et[:len(prefix)] == prefix &&
-				(len(et) == len(prefix) || et[len(prefix)] == '.') {
-				return true
-			}
 		}
 	}
 	return false

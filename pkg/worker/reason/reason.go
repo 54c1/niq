@@ -239,6 +239,12 @@ func (w *Worker) consumeStream(reasonCtx context.Context, stream *llm.EventStrea
 }
 
 // finalMessage retrieves the final message from a completed stream.
+//
+// The 5s timeout is a hang-guard, not a normal path: End/Abort always populate
+// the stream's result channel before closing its events channel, so by the time
+// the stream is exhausted Result returns immediately. The bound only matters if
+// a provider ends a stream without delivering a final message — it turns that
+// into an error instead of hanging the reasoning goroutine forever.
 func (w *Worker) finalMessage(stream *llm.EventStream) (llm.Message, error) {
 	resultCtx, resultCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer resultCancel()
@@ -371,8 +377,8 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 	for _, tc := range busCalls {
 		t, ok := w.workerTools[tc.ToolName]
 		if !ok {
-			log.Printf("[reason %s] unknown tool: %s — failing immediately", w.ID(), tc.ToolName)
-			w.replacePlaceholder(tc.ToolCallID, failMessage(tc.ToolCallID, tc.ToolName, "unknown tool: "+tc.ToolName))
+			log.Printf("[reason %s] unavailable tool: %s — not dispatched", w.ID(), tc.ToolName)
+			w.replacePlaceholder(tc.ToolCallID, unavailableToolMessage(tc.ToolCallID, tc.ToolName))
 			continue
 		}
 		// Strip the worker ID prefix so the target worker receives

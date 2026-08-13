@@ -5,7 +5,7 @@
 //
 // Event → user message:   convertEvent / DefaultConverter
 // Tool result → tool msg: resultMessageFromEvent / resultOutcome (event-driven)
-// Park / unknown tool:    parkResultMessage / failMessage (no-event driven)
+// Park / unavailable tool: parkResultMessage / unavailableToolMessage (no-event driven)
 // Late result:            appendLateResult (event + parked call)
 // Placeholder:            insertPlaceholders / replacePlaceholder / updatePlaceholderToParked*
 package reason
@@ -13,7 +13,6 @@ package reason
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
@@ -26,20 +25,10 @@ func isToolResultEvent(typ event.EventType) bool {
 }
 
 // typeMatches reports whether an event type matches a subscription pattern.
-// Supports exact match, "*" (any), and "Prefix.*" prefix wildcards.
+// Delegates to event.PatternMatches, the single source of truth for
+// subscription matching.
 func typeMatches(pattern, eventType event.EventType) bool {
-	p := string(pattern)
-	et := string(eventType)
-	if p == "" || p == "*" {
-		return true
-	}
-	if p == et {
-		return true
-	}
-	if prefix, ok := strings.CutSuffix(p, ".*"); ok {
-		return et == prefix || strings.HasPrefix(et, prefix+".")
-	}
-	return false
+	return event.PatternMatches(string(pattern), eventType)
 }
 
 // convertEvent routes an event through the registered EventConverters.
@@ -103,28 +92,38 @@ func parkReason(cause PreemptCause) string {
 	}
 }
 
-// parkResultMessage builds a tool_result message replacing the [pending]
-// placeholder of a parked call. Parking has no result event, so it is driven
-// by the call's ParkCause.
-func parkResultMessage(rc *ToolCall) llm.Message {
-	return llm.Message{
-		Role:       llm.RoleToolResult,
-		ToolCallID: rc.CallID,
-		ToolName:   rc.Name,
-		Content:    []llm.ContentBlock{{Type: llm.ContentText, Text: parkReason(rc.ParkCause)}},
-	}
-}
-
-// failMessage builds a tool_result message for a call that failed without a
-// result event (e.g. an unknown / hallucinated tool).
-func failMessage(callID, name, reason string) llm.Message {
+// toolResultMessage builds a tool_result message for a tool call with the
+// given outcome text and error flag. The outcome paths — event-driven
+// (resultMessageFromEvent), parked (parkResultMessage), and undispatchable
+// (unavailableToolMessage) — share this shape, so it is factored into one
+// constructor to keep the message structure consistent.
+func toolResultMessage(callID, name, text string, isError bool) llm.Message {
 	return llm.Message{
 		Role:       llm.RoleToolResult,
 		ToolCallID: callID,
 		ToolName:   name,
-		IsError:    true,
-		Content:    []llm.ContentBlock{{Type: llm.ContentText, Text: "Tool call failed: " + reason}},
+		IsError:    isError,
+		Content:    []llm.ContentBlock{{Type: llm.ContentText, Text: text}},
 	}
+}
+
+// parkResultMessage builds a tool_result message replacing the [pending]
+// placeholder of a parked call. Parking has no result event, so it is driven
+// by the call's ParkCause.
+func parkResultMessage(rc *ToolCall) llm.Message {
+	return toolResultMessage(rc.CallID, rc.Name, parkReason(rc.ParkCause), false)
+}
+
+// unavailableToolMessage builds a tool_result message for a tool call that
+// could not be dispatched because its name resolved to no known tool at
+// dispatch time. With a strict tool schema the model rarely invents a name, so
+// the usual triggers are transient: a worker whose worker.ready hasn't been
+// processed yet, a worker that just went away (worker.gone), or a name that
+// didn't round-trip through sanitization. Unlike a dispatched tool that failed
+// during execution, nothing was executed here — the message tells the LLM the
+// tool is unavailable and it should pick a currently-resolvable one.
+func unavailableToolMessage(callID, name string) llm.Message {
+	return toolResultMessage(callID, name, "Unknown tool '"+name+"': not dispatched — tool not available.", true)
 }
 
 // resultOutcome extracts the human-readable outcome text and error flag from a
@@ -154,13 +153,7 @@ func resultMessageFromEvent(evt event.Event) llm.Message {
 	name, _ := evt.Payload["name"].(string)
 
 	text, isError := resultOutcome(evt)
-	return llm.Message{
-		Role:       llm.RoleToolResult,
-		ToolCallID: callID,
-		ToolName:   name,
-		IsError:    isError,
-		Content:    []llm.ContentBlock{{Type: llm.ContentText, Text: text}},
-	}
+	return toolResultMessage(callID, name, text, isError)
 }
 
 // insertPlaceholders adds pending tool_result entries to messages for each bus
