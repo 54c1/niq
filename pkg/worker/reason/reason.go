@@ -18,14 +18,58 @@ import (
 )
 
 func (w *Worker) reason(ctx context.Context) {
-	// Phase 1: Park leftover tools and snapshot state under lock.
+	// Phase 1: Setup (lock). Park leftover tools, snapshot state, build request.
+	traceID, req := w.prepareReasoning()
+
+	// Phase 2: Streaming LLM call.
+	w.broadcastReasonStart(traceID)
+
+	reasonCtx, cancel := context.WithCancel(ctx)
+	w.mu.Lock()
+	w.cancelReason = cancel
+	w.mu.Unlock()
+
+	stream, err := w.openStream(reasonCtx, req)
+	if err != nil {
+		w.handleStreamStartError(ctx, reasonCtx, traceID, err)
+		return
+	}
+
+	outcome := w.consumeStream(reasonCtx, stream, traceID)
+
+	// Phase 3: State update (lock).
+	w.mu.Lock()
+	w.cancelReason = nil
+
+	if outcome.interrupted {
+		w.finishInterrupted(ctx, traceID, outcome)
+		return
+	}
+	if outcome.streamErr != nil {
+		w.broadcastErrorAndEnd(ctx, traceID, outcome.streamErr)
+		return
+	}
+
+	finalMsg, err := w.finalMessage(stream)
+	if err != nil {
+		w.broadcastErrorAndEnd(ctx, traceID, err)
+		return
+	}
+	w.finishReasoning(ctx, traceID, finalMsg)
+}
+
+// prepareReasoning snapshots the reasoning state under lock and builds the
+// completion request: parks leftover tools, captures the trace and current
+// messages, and assembles the request with the current tool set. Returns
+// after releasing the lock.
+func (w *Worker) prepareReasoning() (traceID string, req *llm.CompletionRequest) {
 	w.mu.Lock()
 	w.isReasoning = true
-	w.activeTimeout = "" // each round starts with no active timeout timer
+	w.activeTimeout = "" // each reasoning starts with no active timeout timer
 
-	// Park any pending tools from the previous round before taking the
+	// Park any pending tools from the previous reasoning before taking the
 	// snapshot, so the LLM sees the parked context. The cause is taken
-	// from setImmediateReasoning if set, otherwise falls back to Input.
+	// from immediateReasoningCause if set, otherwise falls back to Input.
 	cause := w.immediateReasoningCause
 	if cause == "" {
 		cause = PreemptCauseInput
@@ -33,7 +77,7 @@ func (w *Worker) reason(ctx context.Context) {
 	w.immediateReasoningCause = ""
 	w.parkPending(cause)
 
-	traceID := w.currentTraceID
+	traceID = w.currentTraceID
 	tools := w.allTools()
 	c := &llm.Context{
 		SystemPrompt:    w.buildInstruction(),
@@ -41,22 +85,17 @@ func (w *Worker) reason(ctx context.Context) {
 		Tools:           toolDefs(w, tools),
 		ReasoningEffort: w.reasoningEffort,
 	}
-	req := &llm.CompletionRequest{Context: c}
+	req = &llm.CompletionRequest{Context: c}
 	if len(tools) > 0 {
 		req.ToolChoice = llm.ToolChoiceAuto
 	}
 	w.mu.Unlock()
 
-	// Log tool definitions and last few messages for debugging.
-	w.logLLMCall(c)
+	return traceID, req
+}
 
-	// Phase 2: Streaming LLM call.
-	w.broadcastReasonStart(traceID)
-	reasonCtx, cancel := context.WithCancel(ctx)
-	w.mu.Lock()
-	w.cancelReason = cancel
-	w.mu.Unlock()
-
+// openStream starts the LLM stream, retrying on transient errors.
+func (w *Worker) openStream(reasonCtx context.Context, req *llm.CompletionRequest) (*llm.EventStream, error) {
 	var stream *llm.EventStream
 	err := helper.Retry(reasonCtx, 5, func() (bool, error) {
 		s, callErr := w.llmProvider.CompleteStream(reasonCtx, req)
@@ -70,26 +109,22 @@ func (w *Worker) reason(ctx context.Context) {
 		}
 		return llmErr.Type == llm.ErrorRateLimit || llmErr.Type == llm.ErrorTimeout, callErr
 	})
+	return stream, err
+}
 
-	if err != nil {
-		w.mu.Lock()
-		w.cancelReason = nil
+// streamOutcome summarizes the result of consuming an LLM stream.
+type streamOutcome struct {
+	interrupted     bool
+	streamErr       error
+	partialThinking string
+	partialText     string
+}
 
-		// case interrupted
-		if reasonCtx.Err() != nil {
-			log.Printf("[reason %s] reasoning interrupted", w.ID())
-			w.broadcastReasonEnd(traceID, StopReasonInterrupted)
-			w.isReasoning = false
-			w.mu.Unlock()
-			w.tryReason(ctx)
-			return
-		}
-
-		w.broadcastErrorAndEnd(ctx, traceID, err)
-		return
-	}
-
-	// Event loop: consume streaming deltas, flush every 5s.
+// consumeStream reads deltas off the stream, batching them into periodic
+// delta events, until the stream ends or the reasoning is interrupted. On
+// interruption it drains the stream and preserves any partial content
+// into the transcript so the next reasoning can continue from it.
+func (w *Worker) consumeStream(reasonCtx context.Context, stream *llm.EventStream, traceID string) streamOutcome {
 	var (
 		thinkingBuf     strings.Builder
 		textBuf         strings.Builder
@@ -119,9 +154,9 @@ func (w *Worker) reason(ctx context.Context) {
 	for !streamDone {
 		select {
 		case <-reasonCtx.Done():
-			// Interrupted: abort or new input preempted the round.
+			// Interrupted: abort or new input preempted the reasoning. Save
+			// accumulated content before flushing (flush resets buffers).
 			interrupted = true
-			// Save accumulated content before flushing (flush resets buffers).
 			partialThinking = thinkingBuf.String()
 			partialText = textBuf.String()
 			drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -166,7 +201,7 @@ func (w *Worker) reason(ctx context.Context) {
 				// Text delta: accumulate for batch flush.
 				textBuf.WriteString(e.Delta)
 			case llm.EventError:
-				// Stream error: flush what we have, surface error in Phase 3.
+				// Stream error: flush what we have, surface in Phase 3.
 				streamErr = e.Err
 				flushBatches()
 				streamDone = true
@@ -174,24 +209,30 @@ func (w *Worker) reason(ctx context.Context) {
 		}
 	}
 
-	// Phase 3: State update (lock)
+	return streamOutcome{
+		interrupted:     interrupted,
+		streamErr:       streamErr,
+		partialThinking: partialThinking,
+		partialText:     partialText,
+	}
+}
+
+// finalMessage retrieves the final message from a completed stream.
+func (w *Worker) finalMessage(stream *llm.EventStream) (llm.Message, error) {
+	resultCtx, resultCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer resultCancel()
+	return stream.Result(resultCtx)
+}
+
+// handleStreamStartError handles a failure to open the LLM stream. If the
+// request was interrupted (abort or new input preempted the reasoning), it
+// broadcasts the interrupted lifecycle quietly; otherwise it surfaces the error.
+func (w *Worker) handleStreamStartError(ctx context.Context, reasonCtx context.Context, traceID string, err error) {
 	w.mu.Lock()
 	w.cancelReason = nil
 
-	if interrupted {
-		cause := w.interruptReason
-		if cause == "" {
-			cause = "unknown"
-		}
-		preserved := partialThinking + partialText
-		log.Printf("[reason %s] reasoning interrupted (cause=%s, preserved=%d chars)", w.ID(), cause, len(preserved))
-		evt := event.New("reason.interrupted", w.ID(), map[string]any{
-			"reason":          string(cause),
-			"preserved_chars": len(preserved),
-			"preserved_text":  preserved,
-		})
-		evt.TraceID = traceID
-		_ = w.Channel.Broadcast(context.Background(), evt)
+	if reasonCtx.Err() != nil {
+		log.Printf("[reason %s] reasoning interrupted", w.ID())
 		w.broadcastReasonEnd(traceID, StopReasonInterrupted)
 		w.isReasoning = false
 		w.mu.Unlock()
@@ -199,20 +240,38 @@ func (w *Worker) reason(ctx context.Context) {
 		return
 	}
 
-	if streamErr != nil {
-		w.broadcastErrorAndEnd(ctx, traceID, streamErr)
-		return
-	}
+	w.broadcastErrorAndEnd(ctx, traceID, err)
+}
 
-	// Get final message from the stream.
-	resultCtx, resultCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	finalMsg, err := stream.Result(resultCtx)
-	resultCancel()
-	if err != nil {
-		w.broadcastErrorAndEnd(ctx, traceID, err)
-		return
+// finishInterrupted broadcasts the interrupted lifecycle for reasoning that
+// was cancelled mid-stream. The partial content is preserved in the
+// transcript. Expects w.mu to be held; unlocks it and calls tryReason before
+// returning.
+func (w *Worker) finishInterrupted(ctx context.Context, traceID string, out streamOutcome) {
+	cause := w.interruptReason
+	if cause == "" {
+		cause = "unknown"
 	}
+	preserved := out.partialThinking + out.partialText
+	log.Printf("[reason %s] reasoning interrupted (cause=%s, preserved=%d chars)", w.ID(), cause, len(preserved))
+	evt := event.New("reason.interrupted", w.ID(), map[string]any{
+		"reason":          string(cause),
+		"preserved_chars": len(preserved),
+		"preserved_text":  preserved,
+	})
+	evt.TraceID = traceID
+	_ = w.Channel.Broadcast(context.Background(), evt)
+	w.broadcastReasonEnd(traceID, StopReasonInterrupted)
+	w.isReasoning = false
+	w.mu.Unlock()
+	w.tryReason(ctx)
+}
 
+// finishReasoning completes a successful reasoning: records the final
+// message, publishes thinking blocks, and either dispatches tool calls or
+// broadcasts the text response. Expects w.mu to be held; unlocks it and calls
+// tryReason before returning.
+func (w *Worker) finishReasoning(ctx context.Context, traceID string, finalMsg llm.Message) {
 	log.Printf("[reason %s] LLM response: stop_reason=%s, content_blocks=%d",
 		w.ID(), finalMsg.StopReason, len(finalMsg.Content))
 
@@ -241,7 +300,7 @@ func (w *Worker) reason(ctx context.Context) {
 		return
 	}
 
-	// Text-only response: publish content, then signal round end.
+	// Text-only response: publish content, then signal reasoning end.
 	w.broadcastResponse(finalMsg, traceID)                         // reason.response — text content
 	w.broadcastReasonEnd(traceID, StopReason(finalMsg.StopReason)) // reason.end — lifecycle signal
 
@@ -250,45 +309,6 @@ func (w *Worker) reason(ctx context.Context) {
 
 	// calls tryReason again to catch overlapping events.
 	w.tryReason(ctx)
-}
-
-func (w *Worker) logLLMCall(c *llm.Context) {
-	toolNames := make([]string, len(c.Tools))
-	for i, td := range c.Tools {
-		toolNames[i] = td.Name
-	}
-	lastMsgs := c.Messages
-	if len(lastMsgs) > 4 {
-		lastMsgs = lastMsgs[len(lastMsgs)-4:]
-	}
-	msgSummaries := make([]string, len(lastMsgs))
-	for i, m := range lastMsgs {
-		s := string(m.Role)
-		if m.ToolCallID != "" {
-			s += "[" + m.ToolCallID + "]"
-		}
-		msgSummaries[i] = s
-	}
-	log.Printf("[reason %s] LLM call: tools=%v, last_msgs=%v", w.ID(), toolNames, msgSummaries)
-
-	// Warn if essential timer tools are missing (any worker can provide
-	// them — not necessarily the "timer" worker).
-	hasTimeout := false
-	hasElapse := false
-	for name := range w.workerTools {
-		if strings.HasSuffix(name, ".set_tool_timeout") {
-			hasTimeout = true
-		}
-		if strings.HasSuffix(name, ".elapse") {
-			hasElapse = true
-		}
-	}
-	if !hasTimeout {
-		log.Printf("[reason %s] WARNING: no worker provides 'set_tool_timeout' — tool call timeout unavailable", w.ID())
-	}
-	if !hasElapse {
-		log.Printf("[reason %s] WARNING: no worker provides 'elapse' — reminder support unavailable", w.ID())
-	}
 }
 
 func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlock, traceID string) {
