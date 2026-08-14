@@ -62,4 +62,7 @@ type IdentityRegistry interface {
 	// Lookup returns the identity for a worker ID, or false if
 	// not found.
 	Lookup(workerID string) (Identity, bool)
+
+	// List returns all registered identities.
+	List() []Identity
 }

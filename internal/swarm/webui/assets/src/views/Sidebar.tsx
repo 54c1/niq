@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useTheme, fontSizes } from '../theme'
 import { type WorkerInfo } from '../types'
+import { suspendWorker, resumeWorker } from '../services/api'
 
 interface SidebarProps {
   view: 'talk' | 'events'
@@ -22,6 +23,11 @@ export default function Sidebar({ view, setView, filterWorker, setFilterWorker, 
     } else {
       setFilterWorker(filterWorker === id ? '' : id)
     }
+  }
+
+  const handleAction = async (id: string, state?: string) => {
+    if (state === 'suspended') await resumeWorker(id)
+    else await suspendWorker(id)
   }
 
   return (
@@ -76,24 +82,43 @@ export default function Sidebar({ view, setView, filterWorker, setFilterWorker, 
         const isActive = view === 'talk'
           ? talkWorkers.has(w.id)
           : filterWorker === w.id
+        const suspended = w.managed && w.state === 'suspended'
         return (
-          <div
-            key={w.id}
-            style={{ cursor: 'pointer', color: isActive ? colors.accent : colors.textDim, fontSize: fontSizes.md }}
-            onClick={() => handleWorkerClick(w.id)}
-          >
-            {isActive ? '\u2611 ' : '\u2610 '}
-            {w.id}
-            {w.type ? (
-              <span
-                style={{
-                  color: isActive ? colors.accentDim : colors.textDimmed,
-                  fontStyle: 'italic',
-                }}
-              >
-                {': ' + w.type}
-              </span>
-            ) : ''}
+          <div key={w.id} style={{ marginBottom: 6 }}>
+            <div
+              style={{ cursor: 'pointer', color: isActive ? colors.accent : colors.textDim, fontSize: fontSizes.md }}
+              onClick={() => handleWorkerClick(w.id)}
+            >
+              {isActive ? '\u2611 ' : '\u2610 '}
+              {w.id}
+              {w.type ? (
+                <span style={{ color: isActive ? colors.accentDim : colors.textDimmed, fontStyle: 'italic' }}>
+                  {': ' + w.type}
+                </span>
+              ) : ''}
+              {w.online === false && <span style={{ color: colors.textDimmed, marginLeft: 6 }}>(offline)</span>}
+              {w.managed && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    color: suspended ? colors.textDimmed : colors.accent,
+                    fontSize: fontSizes.sm,
+                  }}
+                >
+                  {suspended ? '\u25CF suspended' : '\u25CF running'}
+                </span>
+              )}
+            </div>
+            {w.managed && view === 'events' && (
+              <div style={{ marginLeft: 26, fontSize: fontSizes.sm }}>
+                <span
+                  onClick={() => handleAction(w.id, w.state)}
+                  style={{ cursor: 'pointer', color: colors.textDimmed, textDecoration: 'underline' }}
+                >
+                  {suspended ? 'resume' : 'suspend'}
+                </span>
+              </div>
+            )}
           </div>
         )
       })}

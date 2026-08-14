@@ -16,11 +16,12 @@ import (
 	"strconv"
 	"time"
 
+	corebus "github.com/54c1/niq/core/bus"
+	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/pkg/service/eventbus"
 	eventbusapi "github.com/54c1/niq/pkg/service/eventbus/api"
+	"github.com/54c1/niq/pkg/service/workerhost"
 	"github.com/54c1/niq/pkg/worker/hiw"
-
-	"github.com/54c1/niq/core/event"
 )
 
 //go:embed assets/dist/*
@@ -28,17 +29,19 @@ var embeddedAssets embed.FS
 
 // Server is the WebUI HTTP server.
 type Server struct {
-	hiw      *hiw.Worker
-	server   *http.Server
-	devMode  bool // when true, static assets are proxied to Vite dev server
-	eventLog *eventbusapi.EventLog
-	engine   *eventbus.Engine
+	hiw       *hiw.Worker
+	server    *http.Server
+	devMode   bool // when true, static assets are proxied to Vite dev server
+	eventLog  *eventbusapi.EventLog
+	engine    *eventbus.Engine
+	registry  corebus.IdentityRegistry
+	workerSvc *workerhost.WorkerService
 }
 
 // New creates a WebUI Server.
 // devMode enables Vite-proxy mode (frontend runs on :5173, APIs stay on addr).
-func New(h *hiw.Worker, el *eventbusapi.EventLog, engine *eventbus.Engine, addr string, devMode bool) *Server {
-	s := &Server{hiw: h, eventLog: el, engine: engine, devMode: devMode}
+func New(h *hiw.Worker, el *eventbusapi.EventLog, engine *eventbus.Engine, workerSvc *workerhost.WorkerService, registry corebus.IdentityRegistry, addr string, devMode bool) *Server {
+	s := &Server{hiw: h, eventLog: el, engine: engine, workerSvc: workerSvc, registry: registry, devMode: devMode}
 	mux := http.NewServeMux()
 
 	// ── API routes ──
@@ -49,8 +52,13 @@ func New(h *hiw.Worker, el *eventbusapi.EventLog, engine *eventbus.Engine, addr 
 	// Input: publish user input to the bus as HIW.
 	mux.HandleFunc("POST /api/input", s.handleInput)
 
-	// Workers: list online workers from the engine.
+	// Workers: list all registered workers with identity, connection and
+	// host-managed lifecycle state.
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
+
+	// Suspend / resume a host-managed worker (via the host worker's tools).
+	mux.HandleFunc("POST /api/workers/{id}/suspend", s.handleSuspend)
+	mux.HandleFunc("POST /api/workers/{id}/resume", s.handleResume)
 
 	// Events pagination: load events before a given anchor.
 	mux.HandleFunc("GET /api/events/before/{id}", s.handleLoadBefore)
@@ -142,21 +150,80 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// WorkerView is the unified view of a worker: its registered identity (from
+// the bus registry), its connection status, and — if host-managed — its
+// lifecycle state.
+type WorkerView struct {
+	ID             string   `json:"id"`
+	Type           string   `json:"type"`
+	Credential     string   `json:"credential,omitempty"`
+	PublishAllow   []string `json:"publish_allow,omitempty"`
+	SubscribeAllow []string `json:"subscribe_allow,omitempty"`
+	Online         bool     `json:"online"`
+	Managed        bool     `json:"managed"`
+	State          string   `json:"state,omitempty"` // "running" | "suspended" (managed only)
+}
+
+// handleWorkers returns every registered worker identity merged with its
+// connection status and host-managed lifecycle state.
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
-	ids := s.engine.OnlineWorkers()
-	type workerInfo struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
+	online := map[string]bool{}
+	for _, id := range s.engine.OnlineWorkers() {
+		online[id] = true
 	}
-	infos := make([]workerInfo, 0, len(ids))
-	for _, id := range ids {
-		typ := ""
-		if identity, ok := s.engine.Lookup(id); ok {
-			typ = identity.Type
+
+	managed := map[string]string{} // id → state
+	for _, wi := range s.workerSvc.ListWorkers("") {
+		managed[wi.ID] = string(wi.State)
+	}
+
+	var views []WorkerView
+	for _, id := range s.registry.List() {
+		v := WorkerView{ID: id.WorkerID, Type: id.Type, Credential: id.Credential,
+			PublishAllow: id.PublishAllow, SubscribeAllow: id.SubscribeAllow,
+			Online: online[id.WorkerID]}
+		if state, ok := managed[id.WorkerID]; ok {
+			v.Managed = true
+			v.State = state
 		}
-		infos = append(infos, workerInfo{ID: id, Type: typ})
+		views = append(views, v)
 	}
-	json.NewEncoder(w).Encode(infos)
+
+	// Include managed workers whose identity is not yet registered (transient).
+	for _, wi := range s.workerSvc.ListWorkers("") {
+		if _, ok := s.registry.Lookup(wi.ID); !ok {
+			views = append(views, WorkerView{
+				ID: wi.ID, Type: wi.Type, Managed: true, State: string(wi.State), Online: online[wi.ID],
+			})
+		}
+	}
+
+	json.NewEncoder(w).Encode(views)
+}
+
+// handleSuspend suspends a host-managed worker by publishing tool.requested to
+// the host worker (data-plane, auditable).
+func (s *Server) handleSuspend(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	evts := []event.Event{event.New(event.TypeToolRequested, "hiw", map[string]any{
+		"call_id":   "webui-suspend-" + id,
+		"name":      "suspend",
+		"arguments": map[string]any{"worker_id": id},
+	})}
+	_ = s.hiw.Channel.Send(r.Context(), evts[0], "host")
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleResume resumes a host-managed worker via the host worker's tools.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	evt := event.New(event.TypeToolRequested, "hiw", map[string]any{
+		"call_id":   "webui-resume-" + id,
+		"name":      "resume",
+		"arguments": map[string]any{"worker_id": id},
+	})
+	_ = s.hiw.Channel.Send(r.Context(), evt, "host")
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {

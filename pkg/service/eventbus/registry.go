@@ -118,6 +118,17 @@ func (r *FileIdentityRegistry) Lookup(workerID string) (corebus.Identity, bool) 
 	return id, ok
 }
 
+// List implements corebus.IdentityRegistry.
+func (r *FileIdentityRegistry) List() []corebus.Identity {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]corebus.Identity, 0, len(r.identities))
+	for _, id := range r.identities {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // Close closes the registry. No-op for file-backed implementation.
 // Included for interface completeness.
 func (r *FileIdentityRegistry) Close() error {

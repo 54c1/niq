@@ -1,9 +1,10 @@
 // Package host provides the HostWorker — the bus-facing worker that exposes
-// spawn/list/destroy tools for managing other workers' lifecycles.
+// spawn/suspend/resume tools for managing other workers' lifecycles.
 //
-// HostWorker's "external" is lifecycle.WorkerService, analogous to how
-// workspace workers use wsbackend as their external. HostWorker handles
-// the bus protocol; WorkerService handles the lifecycle mechanics.
+// HostWorker is deliberately thin: it handles the bus protocol (tool.requested
+// events, replies) and forwards lifecycle operations to workerhost.WorkerService.
+// It holds no knowledge of how specific worker types are built — that lives in
+// the Builder registry the assembly layer registers on the WorkerService.
 package host
 
 import (
@@ -15,31 +16,26 @@ import (
 	corebus "github.com/54c1/niq/core/bus"
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/service/eventbus/transport/inprocess"
 	"github.com/54c1/niq/pkg/service/workerhost"
 )
 
 // Config holds the configuration for a HostWorker.
 type Config struct {
-	ID       string
-	Bus      corebus.WorkerSideChannel // data-plane client
-	Registry corebus.IdentityRegistry  // control-plane identity registry
-	Listener *inprocess.InProcListener // for spawning workers
-	Engine   *workerhost.WorkerService
+	ID     string
+	Bus    corebus.WorkerSideChannel // data-plane client
+	Engine *workerhost.WorkerService
 }
 
 // HostWorker is a bus-facing worker that manages other worker lifecycles.
 // It subscribes to tool.requested and worker.discover, and exposes
-// spawn/list/destroy tools on the bus. Actual lifecycle operations are
+// spawn/suspend/resume tools on the bus. Actual lifecycle operations are
 // delegated to workerhost.WorkerService.
 type HostWorker struct {
 	worker.BaseWorker
-	registry corebus.IdentityRegistry
-	listener *inprocess.InProcListener
-	engine   *workerhost.WorkerService
-	started  bool
-	cancel   context.CancelFunc
-	mu       sync.Mutex
+	engine  *workerhost.WorkerService
+	started bool
+	cancel  context.CancelFunc
+	mu      sync.Mutex
 }
 
 // New creates a HostWorker that delegates lifecycle operations to engine.
@@ -54,9 +50,7 @@ func New(cfg Config) *HostWorker {
 			event.NewPattern(event.TypeToolCancel),
 			event.NewPattern(event.TypeWorkerDiscover),
 		}, cfg.Bus),
-		registry: cfg.Registry,
-		listener: cfg.Listener,
-		engine:   cfg.Engine,
+		engine: cfg.Engine,
 	}
 }
 

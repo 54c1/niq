@@ -3,7 +3,6 @@ package swarm
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +27,7 @@ import (
 	"github.com/54c1/niq/pkg/worker/timer"
 )
 
-// BuildContext holds shared dependencies that worker factories need.
+// BuildContext holds shared dependencies that worker builders need.
 type BuildContext struct {
 	Registry     corebus.IdentityRegistry
 	Listener     *inprocess.InProcListener
@@ -38,189 +37,208 @@ type BuildContext struct {
 	ProgramsRoot string
 }
 
-// clientFor registers an identity and creates a WorkerSideChannel for a worker.
-func clientFor(ctx BuildContext, cfg WorkerConfig) (corebus.WorkerSideChannel, error) {
-	subAllow := cfg.Subscriptions
-	if len(subAllow) == 0 {
-		subAllow = []string{"*"}
-	}
-	pubAllow := cfg.Publish
-	if len(pubAllow) == 0 {
-		pubAllow = []string{"*"}
-	}
-
-	if err := ctx.Registry.Register(corebus.Identity{
-		WorkerID:       cfg.ID,
-		Type:           cfg.Type,
-		PublishAllow:   pubAllow,
-		SubscribeAllow: subAllow,
-	}); err != nil {
-		// If already registered from a previous run, update the allow lists.
-		if strings.Contains(err.Error(), "already registered") {
-			ctx.Registry.Update(cfg.ID, pubAllow, subAllow)
-		} else {
-			return nil, fmt.Errorf("swarm: register worker %q: %w", cfg.ID, err)
-		}
-	}
-
-	ch := inprocess.NewWorkerSide(cfg.ID, ctx.Listener)
-	if err := ch.Connect(context.Background(), "inproc://niq"); err != nil {
-		return nil, fmt.Errorf("swarm: connect worker %q: %w", cfg.ID, err)
-	}
-
-	log.Printf("[swarm] registered worker %s (pub=%v sub=%v)", cfg.ID, pubAllow, subAllow)
-	return ch, nil
+// RegisterBuilders registers a Builder for every known worker type onto service.
+func RegisterBuilders(ctx BuildContext, svc *workerhost.WorkerService) {
+	svc.RegisterBuilder("reason", func(cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+		return buildReasonSpec(ctx, cfg)
+	})
+	svc.RegisterBuilder("workspace", func(cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+		return buildWorkspaceSpec(ctx, cfg)
+	})
+	svc.RegisterBuilder("host", func(cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+		return buildHostSpec(ctx, cfg)
+	})
+	svc.RegisterBuilder("timer", func(cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+		return buildTimerSpec(ctx, cfg)
+	})
+	svc.RegisterBuilder("hiw", func(cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+		return buildHIWSpec(ctx, cfg)
+	})
+	svc.RegisterBuilder("program", func(cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+		return buildProgramSpec(ctx, cfg)
+	})
 }
 
-// BuildWorker instantiates a single worker.ManagedWorker from a config entry.
-func BuildWorker(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	switch cfg.Type {
-	case "reason":
-		return buildReason(ctx, cfg)
-	case "workspace":
-		return buildWorkspace(ctx, cfg)
-	case "host":
-		return buildHost(ctx, cfg)
-	case "timer":
-		return buildTimer(ctx, cfg)
-	case "hiw":
-		return buildHIW(ctx, cfg)
-	case "program":
-		return buildProgram(ctx, cfg)
-	default:
-		return nil, fmt.Errorf("swarm: unknown worker type %q", cfg.Type)
+// specConnect builds a Connect closure: registers the identity idempotently and
+// creates a fresh, connected in-process worker-side channel.
+func specConnect(ctx BuildContext, id, typ string, pubAllow, subAllow []string) func() (corebus.WorkerSideChannel, error) {
+	return func() (corebus.WorkerSideChannel, error) {
+		if err := ctx.Registry.Register(corebus.Identity{
+			WorkerID:       id,
+			Type:           typ,
+			PublishAllow:   pubAllow,
+			SubscribeAllow: subAllow,
+		}); err != nil {
+			// Identity may exist from a previous run; refresh its allow lists so
+			// they reflect the current builder config.
+			if strings.Contains(err.Error(), "already registered") {
+				ctx.Registry.Update(id, pubAllow, subAllow)
+			} else {
+				return nil, err
+			}
+		}
+		ch := inprocess.NewWorkerSide(id, ctx.Listener)
+		if err := ch.Connect(context.Background(), "inproc://niq"); err != nil {
+			return nil, err
+		}
+		return ch, nil
 	}
 }
 
 // ── reason ──
 
-func buildReason(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	client, err := clientFor(ctx, cfg)
-	if err != nil {
-		return nil, err
+func buildReasonSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+	id := cfg.ID
+	if id == "" {
+		return worker.SpawnSpec{}, fmt.Errorf("reason: id is required")
 	}
+	p := cfg.Params
 
-	subs := cfg.Subscriptions
-	handlers := make([]reason.EventConverter, 0, len(subs))
-	for _, s := range subs {
-		pat := s
-		handlers = append(handlers, reason.EventConverter{
-			Pattern: event.NewPattern(event.EventType(pat)),
-			Converter: func(evt event.Event) []llm.Message {
-				text, _ := evt.Payload["text"].(string)
-				if text == "" {
-					text = fmt.Sprintf("Event: %s from %s", evt.Type, evt.WorkerId)
-				}
-				return []llm.Message{{
-					Role:    llm.RoleUser,
-					Content: []llm.ContentBlock{{Type: llm.ContentText, Text: text}},
-				}}
-			},
+	provider, _ := p["provider"].(string)
+	apiKey, _ := p["api_key"].(string)
+	baseURL, _ := p["base_url"].(string)
+	model, _ := p["model"].(string)
+
+	subAllow := stringSlice(p["subscriptions"])
+	if len(subAllow) == 0 {
+		subAllow = []string{
+			"tool.completed", "tool.failed", "tool.rejected",
+			"worker.ready", "worker.gone", "worker.discover", "worker.abort",
+			"timer.timeout", "timer.reminder", "worker.input", "tool.requested",
+		}
+	}
+	pubAllow := stringSlice(p["publish"])
+	if len(pubAllow) == 0 {
+		pubAllow = []string{"*"}
+	}
+	programs := parsePrograms(p, id)
+	events := parseEvents(p)
+
+	connect := specConnect(ctx, id, "reason", pubAllow, subAllow)
+	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
+		return reason.NewWorker(reason.Config{
+			ID:              id,
+			Provider:        providerFromArgs(provider, apiKey, baseURL, model),
+			Programs:        programs,
+			EventConverters: events,
+			Bus:             ch,
 		})
 	}
-
-	provider := resolveProvider(cfg)
-
-	var programs []programpkg.Program
-	if cfg.Instruction != "" {
-		programs = append(programs, programpkg.Program{
-			Meta: programpkg.Meta{
-				Name:        cfg.ID + "-instruction",
-				ContentType: programpkg.ContentTypeInstruction,
-			},
-			EntryContent: programpkg.ProgramContent{
-				Content: cfg.Instruction,
-			},
-		})
-	}
-
-	return reason.NewWorker(reason.Config{
-		ID:              cfg.ID,
-		EventConverters: handlers,
-		Provider:        provider,
-		Programs:        programs,
-		Bus:             client,
-	}), nil
+	return worker.SpawnSpec{
+		ID:      id,
+		Type:    "reason",
+		Config:  cfg,
+		Connect: connect,
+		Build:   build,
+	}, nil
 }
 
 // ── workspace ──
 
-func buildWorkspace(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	client, err := clientFor(ctx, cfg)
+func buildWorkspaceSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+	p := cfg.Params
+	path, _ := p["root_dir"].(string)
+	if path == "" {
+		path, _ = p["path"].(string)
+	}
+	if path == "" {
+		return worker.SpawnSpec{}, fmt.Errorf("workspace: root_dir is required")
+	}
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, err
+		return worker.SpawnSpec{}, fmt.Errorf("workspace: bad root_dir: %w", err)
 	}
+	id := "ws-" + sanitizeWorkerID(abs)
+	params := p
+	params["root_dir"] = abs
+	cfg.ID = id
+	cfg.Params = params
 
-	dir := cfg.RootDir
-	if dir == "" {
-		return nil, fmt.Errorf("swarm: workspace worker %q: root_dir is required", cfg.ID)
+	connect := specConnect(ctx, id, "workspace", []string{"*"}, []string{"tool.requested", "worker.discover"})
+	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
+		return workspace.New(workspace.Config{
+			ID:      id,
+			Bus:     ch,
+			Backend: wsbackend.NewEmbeddedBackend(abs),
+		})
 	}
-	dir, err = filepath.Abs(dir)
-	if err != nil {
-		return nil, fmt.Errorf("swarm: workspace worker %q: bad root_dir: %w", cfg.ID, err)
-	}
-
-	return workspace.New(workspace.Config{
-		ID:      cfg.ID,
-		Bus:     client,
-		Backend: wsbackend.NewEmbeddedBackend(dir),
-	}), nil
+	return worker.SpawnSpec{
+		ID:      id,
+		Type:    "workspace",
+		Config:  cfg,
+		Connect: connect,
+		Build:   build,
+	}, nil
 }
 
 // ── host ──
 
-func buildHost(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	client, err := clientFor(ctx, cfg)
-	if err != nil {
-		return nil, err
+func buildHostSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+	id := cfg.ID
+	if id == "" {
+		id = "host"
 	}
-
-	return host.New(host.Config{
-		ID:       cfg.ID,
-		Bus:      client,
-		Registry: ctx.Registry,
-		Listener: ctx.Listener,
-		Engine:   ctx.WorkerSvc,
-	}), nil
+	connect := specConnect(ctx, id, "host", []string{"*"}, []string{"tool.requested", "tool.cancel", "worker.discover"})
+	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
+		return host.New(host.Config{ID: id, Bus: ch, Engine: ctx.WorkerSvc})
+	}
+	return worker.SpawnSpec{
+		ID:      id,
+		Type:    "host",
+		Config:  cfg,
+		Connect: connect,
+		Build:   build,
+	}, nil
 }
 
 // ── timer ──
 
-func buildTimer(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	client, err := clientFor(ctx, cfg)
-	if err != nil {
-		return nil, err
+func buildTimerSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+	id := cfg.ID
+	if id == "" {
+		id = "timer"
 	}
-
-	return timer.New(timer.Config{
-		ID:  cfg.ID,
-		Bus: client,
-	}), nil
+	connect := specConnect(ctx, id, "timer", []string{"*"}, []string{"tool.requested", "worker.discover"})
+	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
+		return timer.New(timer.Config{ID: id, Bus: ch})
+	}
+	return worker.SpawnSpec{
+		ID:      id,
+		Type:    "timer",
+		Config:  cfg,
+		Connect: connect,
+		Build:   build,
+	}, nil
 }
 
 // ── hiw ──
 
-func buildHIW(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	client, err := clientFor(ctx, cfg)
-	if err != nil {
-		return nil, err
+func buildHIWSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+	id := cfg.ID
+	if id == "" {
+		id = "hiw"
 	}
-
-	return hiw.New(hiw.Config{
-		ID:  cfg.ID,
-		Bus: client,
-	}), nil
+	connect := specConnect(ctx, id, "hiw", []string{"*"}, []string{"*"})
+	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
+		return hiw.New(hiw.Config{ID: id, Bus: ch})
+	}
+	return worker.SpawnSpec{
+		ID:      id,
+		Type:    "hiw",
+		Config:  cfg,
+		Connect: connect,
+		Build:   build,
+	}, nil
 }
 
 // ── program ──
 
-func buildProgram(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, error) {
-	client, err := clientFor(ctx, cfg)
-	if err != nil {
-		return nil, err
+func buildProgramSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, error) {
+	id := cfg.ID
+	if id == "" {
+		id = "program"
 	}
-
-	root := cfg.RootDir
+	root, _ := cfg.Params["root_dir"].(string)
 	if root == "" {
 		root = ctx.ProgramsRoot
 	}
@@ -228,47 +246,162 @@ func buildProgram(ctx BuildContext, cfg WorkerConfig) (worker.ManagedWorker, err
 		home, _ := os.UserHomeDir()
 		root = filepath.Join(home, ".niq", "programs")
 	}
-	root, err = filepath.Abs(root)
+	abs, err := filepath.Abs(root)
 	if err != nil {
-		return nil, fmt.Errorf("swarm: program worker %q: bad root_dir: %w", cfg.ID, err)
+		return worker.SpawnSpec{}, fmt.Errorf("program: bad root_dir: %w", err)
 	}
+	os.MkdirAll(abs, 0755)
 
-	// Ensure the programs directory exists.
-	os.MkdirAll(root, 0755)
-
-	return programworker.New(programworker.Config{
-		ID:      cfg.ID,
-		Bus:     client,
-		Backend: pgbackend.New(root),
-	}), nil
+	connect := specConnect(ctx, id, "program", []string{"*"}, []string{"tool.requested", "worker.discover"})
+	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
+		return programworker.New(programworker.Config{
+			ID:      id,
+			Bus:     ch,
+			Backend: pgbackend.New(abs),
+		})
+	}
+	return worker.SpawnSpec{
+		ID:      id,
+		Type:    "program",
+		Config:  cfg,
+		Connect: connect,
+		Build:   build,
+	}, nil
 }
 
 // ── helpers ──
 
-func resolveProvider(cfg WorkerConfig) llm.LLMProvider {
-	if cfg.Provider != "" {
-		if p, ok := providercfg.Find(cfg.Provider); ok {
-			return providercfg.BuildWithOverrides(p, cfg.APIKey, cfg.BaseURL, cfg.Model)
+func providerFromArgs(provider, apiKey, baseURL, model string) llm.LLMProvider {
+	if provider != "" {
+		if p, ok := providercfg.Find(provider); ok {
+			return providercfg.BuildWithOverrides(p, apiKey, baseURL, model)
 		}
-		if p, ok := providercfg.FindByType(cfg.Provider); ok {
-			return providercfg.BuildWithOverrides(p, cfg.APIKey, cfg.BaseURL, cfg.Model)
+		if p, ok := providercfg.FindByType(provider); ok {
+			return providercfg.BuildWithOverrides(p, apiKey, baseURL, model)
 		}
 		return providercfg.Build(providercfg.Provider{
-			Type:    cfg.Provider,
-			APIKey:  cfg.APIKey,
-			BaseURL: cfg.BaseURL,
-			Model:   cfg.Model,
+			Type:    provider,
+			APIKey:  apiKey,
+			BaseURL: baseURL,
+			Model:   model,
 		})
 	}
-
 	if p, ok := providercfg.Default(); ok {
-		return providercfg.BuildWithOverrides(p, cfg.APIKey, cfg.BaseURL, cfg.Model)
+		return providercfg.BuildWithOverrides(p, apiKey, baseURL, model)
+	}
+	return providercfg.Build(providercfg.Provider{
+		Type:    "deepseek",
+		APIKey:  apiKey,
+		BaseURL: baseURL,
+		Model:   model,
+	})
+}
+
+// parsePrograms extracts a simplified program list from spawn params.
+func parsePrograms(p map[string]any, workerID string) []programpkg.Program {
+	raw, ok := p["programs"].([]any)
+	if !ok || len(raw) == 0 {
+		// A default instruction program derived from the instruction text.
+		if instr, _ := p["instruction"].(string); instr != "" {
+			return []programpkg.Program{
+				{
+					Meta: programpkg.Meta{
+						Name:        workerID + "-instruction",
+						ContentType: programpkg.ContentTypeInstruction,
+					},
+					EntryContent: programpkg.ProgramContent{Content: instr},
+				},
+			}
+		}
+		return []programpkg.Program{
+			{
+				Meta: programpkg.Meta{
+					Name:        workerID + "-instruction",
+					ContentType: programpkg.ContentTypeInstruction,
+				},
+			},
+		}
 	}
 
-	return providercfg.Build(providercfg.Provider{
-		Type:    "openai",
-		APIKey:  cfg.APIKey,
-		BaseURL: cfg.BaseURL,
-		Model:   cfg.Model,
-	})
+	progs := make([]programpkg.Program, 0, len(raw))
+	for _, r := range raw {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := m["name"].(string)
+		ctStr, _ := m["content_type"].(string)
+		if name == "" || ctStr == "" {
+			continue
+		}
+		var ct programpkg.ContentType
+		switch ctStr {
+		case "instruction":
+			ct = programpkg.ContentTypeInstruction
+		case "playbook":
+			ct = programpkg.ContentTypePlaybook
+		default:
+			continue
+		}
+		desc, _ := m["description"].(string)
+		content, _ := m["content"].(string)
+		progs = append(progs, programpkg.Program{
+			Meta: programpkg.Meta{
+				Name:        name,
+				ContentType: ct,
+				Description: desc,
+			},
+			EntryContent: programpkg.ProgramContent{Content: content},
+		})
+	}
+	if len(progs) == 0 {
+		progs = append(progs, programpkg.Program{
+			Meta: programpkg.Meta{
+				Name:        workerID + "-instruction",
+				ContentType: programpkg.ContentTypeInstruction,
+			},
+		})
+	}
+	return progs
+}
+
+// parseEvents extracts event type subscriptions from spawn params.
+func parseEvents(p map[string]any) []reason.EventConverter {
+	raw, ok := p["events"].([]any)
+	if !ok {
+		return nil
+	}
+	handlers := make([]reason.EventConverter, 0, len(raw))
+	for _, r := range raw {
+		evtType, ok := r.(string)
+		if !ok || evtType == "" {
+			continue
+		}
+		handlers = append(handlers, reason.EventConverter{
+			Pattern:   event.NewPattern(event.EventType(evtType)),
+			Converter: reason.DefaultConverter,
+		})
+	}
+	return handlers
+}
+
+func stringSlice(v any) []string {
+	raw, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if s, ok := r.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func sanitizeWorkerID(path string) string {
+	s := strings.TrimPrefix(path, "/")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, " ", "_")
+	return s
 }

@@ -12,4 +12,10 @@ export interface EventPayload {
 export interface WorkerInfo {
   id: string
   type: string
+  credential?: string
+  publish_allow?: string[]
+  subscribe_allow?: string[]
+  online?: boolean
+  managed?: boolean
+  state?: string // "running" | "suspended" (managed only)
 }

@@ -2,15 +2,15 @@
 
 > **niq runs programs that haven't been written yet.**
 
-niq is an **event-driven, decentralized agent runtime**. It is not a single "agent" — it is a collection of **Workers** (a Worker Swarm) that collaborate over an event bus; together they form a complete agent.
+niq is an **event-driven, decentralized agent runtime**. It is a single agent, but one composed of many **Workers** (a Worker Swarm) that collaborate over an event bus — each worker handles its own focus, and together they form the complete agent.
 
 niq has exactly three core concepts:
 
-- **Worker** — a unit that can do things. It subscribes to events, processes them, and publishes new events. Every capability (reasoning, tool execution, safety guards, lifecycle) is a Worker; there is only one extension concept.
-- **Program** — the source of a Worker's capability (natural-language Prompts, or formalized DSL Scripts).
+- **Worker** — a unit that can do things, like an **actor**: it has its own state and communicates only by sending and reacting to messages. A Worker subscribes to events, processes them, and publishes new events. Every capability (reasoning, tool execution, safety guards, lifecycle) is a Worker; there is only one extension concept.
+- **Program** — the source code of a Worker's capability (natural-language Prompts, or formalized DSL Scripts).
 - **Event** — the only communication language between Workers, delivered over the event bus.
 
-Architectural tenets: **everything is a Worker, the control plane lives in the data plane, the concept count stays at 3, and the protocol outlives implementations.**
+Core insight: **collaboration is extension.** niq grows not by adding new abstractions, but by adding more participants that cooperate over the event bus. Extending a capability and having a human join the collaboration are the same act — a user is just another collaborating participant, and there can be one or many of them. In niq, everything is workers collaborating over the event bus.
 
 > **Status: early, fast-moving development.** The design is still evolving; APIs and behavior may change without notice.
 

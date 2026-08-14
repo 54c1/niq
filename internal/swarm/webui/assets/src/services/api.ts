@@ -1,4 +1,5 @@
 // API service — all backend HTTP calls
+import type { WorkerInfo } from '../types'
 
 export async function sendInput(text: string, target: string, inputMode: string): Promise<void> {
   await fetch('/api/input', {
@@ -16,9 +17,17 @@ export async function abortWorker(target: string): Promise<void> {
   })
 }
 
-export async function fetchWorkers(): Promise<{ id: string; type: string }[]> {
+export async function fetchWorkers(): Promise<WorkerInfo[]> {
   const res = await fetch('/api/workers')
   return res.json()
+}
+
+export async function suspendWorker(id: string): Promise<void> {
+  await fetch(`/api/workers/${encodeURIComponent(id)}/suspend`, { method: 'POST' })
+}
+
+export async function resumeWorker(id: string): Promise<void> {
+  await fetch(`/api/workers/${encodeURIComponent(id)}/resume`, { method: 'POST' })
 }
 
 export async function loadEventsBefore(anchorId: string, limit = 50, worker = '', trace = ''): Promise<any[]> {
