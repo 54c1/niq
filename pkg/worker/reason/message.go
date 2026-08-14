@@ -24,17 +24,11 @@ func isToolResultEvent(typ event.EventType) bool {
 	return typ == event.TypeToolCompleted || typ == event.TypeToolFailed || typ == event.TypeToolRejected
 }
 
-// typeMatches reports whether an event type matches a subscription pattern.
-// Delegates to event.PatternMatches, the single source of truth for
-// subscription matching.
-func typeMatches(pattern, eventType event.EventType) bool {
-	return event.PatternMatches(string(pattern), eventType)
-}
-
 // convertEvent routes an event through the registered EventConverters.
+// Matching uses the subscription's full semantics (type + optional source).
 func (w *Worker) convertEvent(evt event.Event) []llm.Message {
 	for _, h := range w.eventConverters {
-		if typeMatches(h.Pattern.Type, evt.Type) {
+		if h.Pattern.Matches(evt) {
 			return h.Converter(evt)
 		}
 	}

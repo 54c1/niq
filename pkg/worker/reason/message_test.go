@@ -127,24 +127,59 @@ func TestParkResultMessage(t *testing.T) {
 	}
 }
 
-// TestTypeMatches verifies the subscription matching semantics.
-func TestTypeMatches(t *testing.T) {
+// TestEventPatternMatches verifies the subscription matching semantics,
+// including type wildcards and optional source filtering.
+func TestEventPatternMatches(t *testing.T) {
 	cases := []struct {
-		pattern string
+		name    string
+		pattern event.EventPattern
 		typ     string
+		source  string
 		want    bool
 	}{
-		{"*", "anything", true},
-		{"tool.completed", "tool.completed", true},
-		{"tool.completed", "tool.failed", false},
-		{"github.*", "github.issue.new", true},
-		{"github.*", "github", true},
-		{"github.*", "gitlab.issue", false},
-		{"", "anything", false}, // empty pattern matches nothing
+		{"wildcard", event.NewPattern("*"), "anything", "", true},
+		{"exact", event.NewPattern("tool.completed"), "tool.completed", "", true},
+		{"exact-miss", event.NewPattern("tool.completed"), "tool.failed", "", false},
+		{"prefix", event.NewPattern("github.*"), "github.issue.new", "", true},
+		{"prefix-bare", event.NewPattern("github.*"), "github", "", true},
+		{"prefix-miss", event.NewPattern("github.*"), "gitlab.issue", "", false},
+		{"empty-miss", event.EventPattern{}, "anything", "", false}, // empty pattern matches nothing
+		{"source-match", event.EventPattern{Type: "pr.ready", SourceID: "gh"}, "pr.ready", "gh", true},
+		{"source-miss", event.EventPattern{Type: "pr.ready", SourceID: "gh"}, "pr.ready", "gitlab", false},
+		{"source-wildcard", event.EventPattern{Type: "*", SourceID: "gh"}, "pr.ready", "gh", true},
 	}
 	for _, c := range cases {
-		if got := typeMatches(event.EventType(c.pattern), event.EventType(c.typ)); got != c.want {
-			t.Errorf("typeMatches(%q, %q) = %v, want %v", c.pattern, c.typ, got, c.want)
+		evt := event.Event{Type: event.EventType(c.typ), WorkerId: c.source}
+		if got := c.pattern.Matches(evt); got != c.want {
+			t.Errorf("%s: Match() = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestEventPatternSourceFilter verifies source-filtered matching end to end
+// through convertEvent.
+func TestEventPatternSourceFilter(t *testing.T) {
+	var converted bool
+	marker := func(evt event.Event) []llm.Message {
+		converted = true
+		return []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "marker"}}}}
+	}
+	w := &Worker{
+		eventConverters: []EventConverter{
+			{Pattern: event.EventPattern{Type: "pr.ready", SourceID: "gh"}, Converter: marker},
+		},
+	}
+
+	// Matching source: marker converter selected.
+	w.convertEvent(event.Event{Type: "pr.ready", WorkerId: "gh"})
+	if !converted {
+		t.Errorf("source match: expected marker converter to run")
+	}
+
+	// Non-matching source: marker converter NOT selected (falls back).
+	converted = false
+	w.convertEvent(event.Event{Type: "pr.ready", WorkerId: "gitlab"})
+	if converted {
+		t.Errorf("source miss: marker converter should not run")
 	}
 }

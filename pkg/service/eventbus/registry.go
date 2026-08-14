@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	corebus "github.com/54c1/niq/core/bus"
+	"github.com/54c1/niq/core/event"
 )
 
 // FileIdentityRegistry implements corebus.IdentityRegistry backed by a JSON file.
@@ -84,7 +85,7 @@ func (r *FileIdentityRegistry) Register(id corebus.Identity) error {
 }
 
 // Update implements corebus.IdentityRegistry.
-func (r *FileIdentityRegistry) Update(workerID string, pubAllow, subAllow []string) error {
+func (r *FileIdentityRegistry) Update(workerID string, pubAllow []string, subAllow []event.EventPattern) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

@@ -61,7 +61,7 @@ func RegisterBuilders(ctx BuildContext, svc *workerhost.WorkerService) {
 
 // specConnect builds a Connect closure: registers the identity idempotently and
 // creates a fresh, connected in-process worker-side channel.
-func specConnect(ctx BuildContext, id, typ string, pubAllow, subAllow []string) func() (corebus.WorkerSideChannel, error) {
+func specConnect(ctx BuildContext, id, typ string, pubAllow []string, subAllow []event.EventPattern) func() (corebus.WorkerSideChannel, error) {
 	return func() (corebus.WorkerSideChannel, error) {
 		if err := ctx.Registry.Register(corebus.Identity{
 			WorkerID:       id,
@@ -99,12 +99,14 @@ func buildReasonSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpe
 	baseURL, _ := p["base_url"].(string)
 	model, _ := p["model"].(string)
 
-	subAllow := stringSlice(p["subscriptions"])
+	subAllow := eventPatternsFromStrings(stringSlice(p["subscriptions"]))
 	if len(subAllow) == 0 {
-		subAllow = []string{
+		for _, t := range []string{
 			"tool.completed", "tool.failed", "tool.rejected",
 			"worker.ready", "worker.gone", "worker.discover", "worker.abort",
 			"timer.timeout", "timer.reminder", "worker.input", "tool.requested",
+		} {
+			subAllow = append(subAllow, event.NewPattern(event.EventType(t)))
 		}
 	}
 	pubAllow := stringSlice(p["publish"])
@@ -124,9 +126,8 @@ func buildReasonSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpe
 			Bus:             ch,
 		})
 	}
+	cfg.Type = "reason"
 	return worker.SpawnSpec{
-		ID:      id,
-		Type:    "reason",
 		Config:  cfg,
 		Connect: connect,
 		Build:   build,
@@ -154,7 +155,10 @@ func buildWorkspaceSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.Spawn
 	cfg.ID = id
 	cfg.Params = params
 
-	connect := specConnect(ctx, id, "workspace", []string{"*"}, []string{"tool.requested", "worker.discover"})
+	connect := specConnect(ctx, id, "workspace", []string{"*"}, []event.EventPattern{
+		event.NewPattern(event.TypeToolRequested),
+		event.NewPattern(event.TypeWorkerDiscover),
+	})
 	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
 		return workspace.New(workspace.Config{
 			ID:      id,
@@ -162,9 +166,8 @@ func buildWorkspaceSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.Spawn
 			Backend: wsbackend.NewEmbeddedBackend(abs),
 		})
 	}
+	cfg.Type = "workspace"
 	return worker.SpawnSpec{
-		ID:      id,
-		Type:    "workspace",
 		Config:  cfg,
 		Connect: connect,
 		Build:   build,
@@ -178,13 +181,17 @@ func buildHostSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec,
 	if id == "" {
 		id = "host"
 	}
-	connect := specConnect(ctx, id, "host", []string{"*"}, []string{"tool.requested", "tool.cancel", "worker.discover"})
+	connect := specConnect(ctx, id, "host", []string{"*"}, []event.EventPattern{
+		event.NewPattern(event.TypeToolRequested),
+		event.NewPattern(event.TypeToolCancel),
+		event.NewPattern(event.TypeWorkerDiscover),
+	})
 	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
 		return host.New(host.Config{ID: id, Bus: ch, Engine: ctx.WorkerSvc})
 	}
+	cfg.ID = id
+	cfg.Type = "host"
 	return worker.SpawnSpec{
-		ID:      id,
-		Type:    "host",
 		Config:  cfg,
 		Connect: connect,
 		Build:   build,
@@ -198,13 +205,16 @@ func buildTimerSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec
 	if id == "" {
 		id = "timer"
 	}
-	connect := specConnect(ctx, id, "timer", []string{"*"}, []string{"tool.requested", "worker.discover"})
+	connect := specConnect(ctx, id, "timer", []string{"*"}, []event.EventPattern{
+		event.NewPattern(event.TypeToolRequested),
+		event.NewPattern(event.TypeWorkerDiscover),
+	})
 	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
 		return timer.New(timer.Config{ID: id, Bus: ch})
 	}
+	cfg.ID = id
+	cfg.Type = "timer"
 	return worker.SpawnSpec{
-		ID:      id,
-		Type:    "timer",
 		Config:  cfg,
 		Connect: connect,
 		Build:   build,
@@ -218,13 +228,13 @@ func buildHIWSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpec, 
 	if id == "" {
 		id = "hiw"
 	}
-	connect := specConnect(ctx, id, "hiw", []string{"*"}, []string{"*"})
+	connect := specConnect(ctx, id, "hiw", []string{"*"}, []event.EventPattern{event.NewPattern("*")})
 	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
 		return hiw.New(hiw.Config{ID: id, Bus: ch})
 	}
+	cfg.ID = id
+	cfg.Type = "hiw"
 	return worker.SpawnSpec{
-		ID:      id,
-		Type:    "hiw",
 		Config:  cfg,
 		Connect: connect,
 		Build:   build,
@@ -252,7 +262,10 @@ func buildProgramSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSp
 	}
 	os.MkdirAll(abs, 0755)
 
-	connect := specConnect(ctx, id, "program", []string{"*"}, []string{"tool.requested", "worker.discover"})
+	connect := specConnect(ctx, id, "program", []string{"*"}, []event.EventPattern{
+		event.NewPattern(event.TypeToolRequested),
+		event.NewPattern(event.TypeWorkerDiscover),
+	})
 	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
 		return programworker.New(programworker.Config{
 			ID:      id,
@@ -260,9 +273,9 @@ func buildProgramSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSp
 			Backend: pgbackend.New(abs),
 		})
 	}
+	cfg.ID = id
+	cfg.Type = "program"
 	return worker.SpawnSpec{
-		ID:      id,
-		Type:    "program",
 		Config:  cfg,
 		Connect: connect,
 		Build:   build,
@@ -395,6 +408,15 @@ func stringSlice(v any) []string {
 		if s, ok := r.(string); ok {
 			out = append(out, s)
 		}
+	}
+	return out
+}
+
+// eventPatternsFromStrings converts type-only subscription strings to patterns.
+func eventPatternsFromStrings(types []string) []event.EventPattern {
+	out := make([]event.EventPattern, 0, len(types))
+	for _, t := range types {
+		out = append(out, event.NewPattern(event.EventType(t)))
 	}
 	return out
 }

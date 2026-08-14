@@ -122,7 +122,7 @@ func (e *Engine) handleBroadcast(ctx context.Context, req corebus.Request, from 
 			if !ok {
 				continue
 			}
-			if !patternMatchesAny(evt.Type, identity.SubscribeAllow) {
+			if !patternMatchesAny(evt, identity.SubscribeAllow) {
 				continue
 			}
 			targets = append(targets, workerID)
@@ -183,12 +183,13 @@ func (e *Engine) Lookup(workerID string) (corebus.Identity, bool) {
 	return e.registry.Lookup(workerID)
 }
 
-// patternMatchesAny reports whether the event type matches any of the patterns.
-// Each pattern is matched via event.PatternMatches, the single source of truth
-// for subscription matching.
-func patternMatchesAny(eventType event.EventType, patterns []string) bool {
+// patternMatchesAny reports whether a routed event matches any of a worker's
+// subscription patterns. Matching delegates to event.EventPattern.Matches — the
+// single source of truth for subscription matching — so the bus and workers
+// agree on both type and source matching.
+func patternMatchesAny(evt event.Event, patterns []event.EventPattern) bool {
 	for _, p := range patterns {
-		if event.PatternMatches(p, eventType) {
+		if p.Matches(evt) {
 			return true
 		}
 	}

@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	corebus "github.com/54c1/niq/core/bus"
+	"github.com/54c1/niq/core/event"
 )
 
 // ── API Key Store ──
@@ -237,10 +238,10 @@ func (s *Server) handleListIdentities(w stdhttp.ResponseWriter, r *stdhttp.Reque
 }
 
 type registerRequest struct {
-	WorkerID       string   `json:"worker_id"`
-	Credential     string   `json:"credential"`
-	PublishAllow   []string `json:"publish_allow"`
-	SubscribeAllow []string `json:"subscribe_allow"`
+	WorkerID       string               `json:"worker_id"`
+	Credential     string               `json:"credential"`
+	PublishAllow   []string             `json:"publish_allow"`
+	SubscribeAllow []event.EventPattern `json:"subscribe_allow"`
 }
 
 func (s *Server) handleRegisterIdentity(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -268,7 +269,7 @@ func (s *Server) handleRegisterIdentity(w stdhttp.ResponseWriter, r *stdhttp.Req
 		id.PublishAllow = []string{"*"}
 	}
 	if id.SubscribeAllow == nil {
-		id.SubscribeAllow = []string{"*"}
+		id.SubscribeAllow = []event.EventPattern{{Type: "*"}}
 	}
 
 	if err := s.registry.Register(id); err != nil {
@@ -278,7 +279,7 @@ func (s *Server) handleRegisterIdentity(w stdhttp.ResponseWriter, r *stdhttp.Req
 
 	w.WriteHeader(201)
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":   "created",
+		"status":    "created",
 		"worker_id": req.WorkerID,
 	})
 }
@@ -312,7 +313,7 @@ func (s *Server) handleIdentityByID(w stdhttp.ResponseWriter, r *stdhttp.Request
 		}
 		w.WriteHeader(200)
 		json.NewEncoder(w).Encode(map[string]string{
-			"status":   "revoked",
+			"status":    "revoked",
 			"worker_id": workerID,
 		})
 

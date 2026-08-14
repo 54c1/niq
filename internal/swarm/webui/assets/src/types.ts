@@ -9,12 +9,17 @@ export interface EventPayload {
   payload: Record<string, any>
 }
 
+export interface EventPattern {
+  type: string
+  source_id?: string
+}
+
 export interface WorkerInfo {
   id: string
   type: string
   credential?: string
   publish_allow?: string[]
-  subscribe_allow?: string[]
+  subscribe_allow?: EventPattern[]
   online?: boolean
   managed?: boolean
   state?: string // "running" | "suspended" (managed only)

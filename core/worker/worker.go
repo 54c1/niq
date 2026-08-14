@@ -72,11 +72,8 @@ type WorkerConfig struct {
 // not persisted. Only Config is serialized — on restart the assembly re-
 // materializes Connect/Build from Config.
 type SpawnSpec struct {
-	// ID is the worker's unique identifier.
-	ID string
-	// Type is the worker type label.
-	Type string
-	// Config is the serializable definition, persisted for resumability.
+	// Config is the single source of truth for the worker's identity (ID,
+	// Type) and construction params. It is persisted for resumability.
 	Config WorkerConfig
 
 	// Connect creates and connects a fresh worker-side channel. Each call
@@ -86,3 +83,9 @@ type SpawnSpec struct {
 	// Build constructs a worker instance bound to the given channel.
 	Build func(ch corebus.WorkerSideChannel) ManagedWorker
 }
+
+// ID returns the worker's unique identifier.
+func (s SpawnSpec) ID() string { return s.Config.ID }
+
+// Type returns the worker type label.
+func (s SpawnSpec) Type() string { return s.Config.Type }

@@ -1,12 +1,10 @@
 package event
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // EventType identifies an event's type on the bus.
@@ -43,14 +41,32 @@ const (
 	StatusDelivered EventStatus = "delivered"
 )
 
-// EventPattern describes which events a Worker subscribes to.
+// EventPattern is a subscription declaration: events of a type, optionally
+// from a specific source worker. It is the single shape used both for the
+// bus's SubscribeAllow routing and for a Worker's declared subscriptions.
 type EventPattern struct {
 	// Type is the event type to match.
 	// Supports exact match, "*" (any), and "Prefix.*" (prefix) wildcards.
-	Type EventType
+	Type EventType `json:"type"`
+	// SourceID optionally restricts the subscription to events published by
+	// this source worker. Empty means "any source".
+	SourceID string `json:"source_id,omitempty"`
 }
 
-// NewPattern is a convenience constructor for the common single-type case.
+// Matches reports whether a fully-routed event satisfies this subscription.
+// Event.WorkerId is set by the bus to the sender, so source matching is
+// authoritative regardless of who forwarded the event.
+func (p EventPattern) Matches(evt Event) bool {
+	if !PatternMatches(string(p.Type), evt.Type) {
+		return false
+	}
+	if p.SourceID != "" && evt.WorkerId != p.SourceID {
+		return false
+	}
+	return true
+}
+
+// NewPattern is a convenience constructor for a type-only subscription.
 func NewPattern(typ EventType) EventPattern {
 	return EventPattern{Type: typ}
 }
@@ -109,11 +125,10 @@ func New(typ EventType, workerId string, payload map[string]any) Event {
 	}
 }
 
-var seq atomic.Uint64
-
+// newID returns a time-ordered UUIDv7 string. It is globally unique and
+// sortable by generation time, making event IDs suitable as durable keys and
+// for chronological audit/replay.
 func newID() string {
-	b := make([]byte, 4)
-	rand.Read(b)
-	n := seq.Add(1)
-	return hex.EncodeToString(b) + "_" + strconv.FormatUint(n, 10)
+	id, _ := uuid.NewV7() // never fails in practice; uses crypto/rand
+	return id.String()
 }

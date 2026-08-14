@@ -154,14 +154,14 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 // the bus registry), its connection status, and — if host-managed — its
 // lifecycle state.
 type WorkerView struct {
-	ID             string   `json:"id"`
-	Type           string   `json:"type"`
-	Credential     string   `json:"credential,omitempty"`
-	PublishAllow   []string `json:"publish_allow,omitempty"`
-	SubscribeAllow []string `json:"subscribe_allow,omitempty"`
-	Online         bool     `json:"online"`
-	Managed        bool     `json:"managed"`
-	State          string   `json:"state,omitempty"` // "running" | "suspended" (managed only)
+	ID             string               `json:"id"`
+	Type           string               `json:"type"`
+	Credential     string               `json:"credential,omitempty"`
+	PublishAllow   []string             `json:"publish_allow,omitempty"`
+	SubscribeAllow []event.EventPattern `json:"subscribe_allow,omitempty"`
+	Online         bool                 `json:"online"`
+	Managed        bool                 `json:"managed"`
+	State          string               `json:"state,omitempty"` // "running" | "suspended" (managed only)
 }
 
 // handleWorkers returns every registered worker identity merged with its

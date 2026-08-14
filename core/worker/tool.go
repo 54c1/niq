@@ -2,14 +2,13 @@ package worker
 
 import "context"
 
-// Tool defines a capability exposed by a worker or external service.
-// It is the shared type used both for internal worker capability
-// declarations (via worker.ready.{id}) and for external RPC client
-// configurations in Config.
+// Tool defines a capability exposed by a worker.
+// It is the shared type used for internal worker capability
+// declarations (via worker.ready).
 type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"` // JSON Schema
+	Parameters  map[string]any `json:"parameters"`         // JSON Schema
 	Provider    string         `json:"provider,omitempty"` // worker that provides this tool
 }
 

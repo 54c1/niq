@@ -10,6 +10,10 @@
 // in-process channels, HTTP/SSE, Unix sockets, or any other transport.
 package bus
 
+import (
+	"github.com/54c1/niq/core/event"
+)
+
 // Identity represents a worker's registered identity on the bus.
 //
 // Identity is created offline by the control plane and persists
@@ -36,9 +40,10 @@ type Identity struct {
 	// Supports "*" (all), "Prefix.*" (prefix), and exact match.
 	PublishAllow []string
 
-	// SubscribeAllow lists event patterns this worker subscribes to.
-	// Supports "*" (all), "Prefix.*" (prefix), and exact match.
-	SubscribeAllow []string
+	// SubscribeAllow lists the event patterns this worker subscribes to.
+	// Each pattern may restrict by type ("*", "Prefix.*", exact) and by
+	// optional source worker.
+	SubscribeAllow []event.EventPattern
 }
 
 // IdentityRegistry is the control-plane interface for managing identities.
@@ -52,7 +57,7 @@ type IdentityRegistry interface {
 
 	// Update replaces the allow lists for an existing identity.
 	// Returns an error if the identity is not found.
-	Update(workerID string, pubAllow, subAllow []string) error
+	Update(workerID string, pubAllow []string, subAllow []event.EventPattern) error
 
 	// Revoke removes an identity. Returns an error if not found.
 	// Future connection attempts with this worker ID will fail

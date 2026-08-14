@@ -84,35 +84,35 @@ func (s *WorkerService) CreateWorker(ctx context.Context, cfg worker.WorkerConfi
 func (s *WorkerService) spawn(ctx context.Context, spec worker.SpawnSpec) error {
 	ch, err := spec.Connect()
 	if err != nil {
-		return fmt.Errorf("workerhost: connect %q: %w", spec.ID, err)
+		return fmt.Errorf("workerhost: connect %q: %w", spec.ID(), err)
 	}
 	w := spec.Build(ch)
 	if err := w.Start(ctx); err != nil {
 		_ = ch.Close()
-		return fmt.Errorf("workerhost: start %q: %w", spec.ID, err)
+		return fmt.Errorf("workerhost: start %q: %w", spec.ID(), err)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.findLocked(spec.ID) != nil {
-		return fmt.Errorf("workerhost: worker %s already exists", spec.ID)
+	if s.findLocked(spec.ID()) != nil {
+		return fmt.Errorf("workerhost: worker %s already exists", spec.ID())
 	}
 	s.entries = append(s.entries, workerEntry{
 		spec:   spec,
 		ch:     ch,
 		worker: w,
-		typ:    spec.Type,
+		typ:    spec.Type(),
 		state:  worker.StateRunning,
 	})
 	if s.store != nil {
 		if err := s.store.SaveConfig(spec.Config); err != nil {
-			log.Printf("[workerhost] persist config %s: %v", spec.ID, err)
+			log.Printf("[workerhost] persist config %s: %v", spec.ID(), err)
 		}
-		if err := s.store.SaveState(spec.ID, worker.StateRunning, nil); err != nil {
-			log.Printf("[workerhost] persist state %s: %v", spec.ID, err)
+		if err := s.store.SaveState(spec.ID(), worker.StateRunning, nil); err != nil {
+			log.Printf("[workerhost] persist state %s: %v", spec.ID(), err)
 		}
 	}
-	log.Printf("[workerhost] created worker %s (type=%s)", spec.ID, spec.Type)
+	log.Printf("[workerhost] created worker %s (type=%s)", spec.ID(), spec.Type())
 	return nil
 }
 
@@ -214,7 +214,7 @@ func (s *WorkerService) ResumeWorker(ctx context.Context, id string) error {
 func (s *WorkerService) DestroyWorker(id string) error {
 	s.mu.Lock()
 	for i, e := range s.entries {
-		if e.spec.ID == id {
+		if e.spec.ID() == id {
 			if e.worker != nil {
 				_ = e.worker.Stop()
 			}
@@ -252,9 +252,9 @@ func (s *WorkerService) ShutdownSnapshot() {
 		}
 		if snap, err := e.worker.Snapshot(); err == nil {
 			e.snapshot = snap
-			targets = append(targets, target{id: e.spec.ID, snap: snap})
+			targets = append(targets, target{id: e.spec.ID(), snap: snap})
 		} else {
-			log.Printf("[workerhost] shutdown snapshot %s: %v", e.spec.ID, err)
+			log.Printf("[workerhost] shutdown snapshot %s: %v", e.spec.ID(), err)
 		}
 	}
 	s.mu.Unlock()
@@ -280,7 +280,7 @@ func (s *WorkerService) ListWorkers(typ string) []WorkerInfo {
 			continue
 		}
 		out = append(out, WorkerInfo{
-			ID:    e.spec.ID,
+			ID:    e.spec.ID(),
 			Type:  e.typ,
 			State: e.state,
 		})
@@ -347,15 +347,15 @@ func (s *WorkerService) RestoreSuspended(cfg worker.WorkerConfig) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.findLocked(spec.ID) != nil {
+	if s.findLocked(spec.ID()) != nil {
 		return nil
 	}
 	s.entries = append(s.entries, workerEntry{
 		spec:  spec,
-		typ:   spec.Type,
+		typ:   spec.Type(),
 		state: worker.StateSuspended,
 	})
-	log.Printf("[workerhost] restored suspended worker %s (type=%s)", spec.ID, spec.Type)
+	log.Printf("[workerhost] restored suspended worker %s (type=%s)", spec.ID(), spec.Type())
 	return nil
 }
 
@@ -381,7 +381,7 @@ func (s *WorkerService) StopAll() {
 		if e.worker == nil {
 			continue
 		}
-		log.Printf("[workerhost] stopping worker %s", e.spec.ID)
+		log.Printf("[workerhost] stopping worker %s", e.spec.ID())
 		_ = e.worker.Stop()
 	}
 	s.mu.Unlock()
@@ -403,7 +403,7 @@ func (s *WorkerService) Run(ctx context.Context) error {
 
 func (s *WorkerService) findLocked(id string) *workerEntry {
 	for i := range s.entries {
-		if s.entries[i].spec.ID == id {
+		if s.entries[i].spec.ID() == id {
 			return &s.entries[i]
 		}
 	}
