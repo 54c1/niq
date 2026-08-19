@@ -1,0 +1,27 @@
+{
+  "name": "@54c1/niq",
+  "version": "0.0.0",
+  "description": "niq - neural interface quantum",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/54c1/niq.git"
+  },
+  "bin": {
+    "niq": "./bin/niq.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "optionalDependencies": {
+    "@54c1/niq-darwin-arm64": "0.0.0",
+    "@54c1/niq-darwin-x64": "0.0.0",
+    "@54c1/niq-linux-arm64": "0.0.0",
+    "@54c1/niq-linux-x64": "0.0.0",
+    "@54c1/niq-win32-x64": "0.0.0",
+    "@54c1/niq-win32-arm64": "0.0.0"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

@@ -18,7 +18,24 @@ import (
 	"github.com/54c1/niq/internal/swarm"
 )
 
+// version is injected at build time via -ldflags:
+//
+//	-X main.version=v1.2.3
+var version = "dev"
+
 func main() {
+	// Handle --version / -v / version before anything else.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-v", "version":
+			fmt.Println("niq", version)
+			return
+		case "--help", "-h", "help":
+			printUsage()
+			return
+		}
+	}
+
 	// Detect subcommand: "niq swarm ..."
 	if len(os.Args) > 1 && os.Args[1] == "swarm" {
 		if err := runSwarm(os.Args[2:]); err != nil {
@@ -34,6 +51,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printUsage() {
+	fmt.Print(`niq - neural interface quantum
+
+Usage:
+  niq                       start with the default "dev" preset
+  niq swarm --config <file> start from a YAML config file
+  niq swarm --preset <name> start from a built-in preset
+  niq --version             print version
+`)
 }
 
 func runSwarm(args []string) error {
@@ -60,9 +88,9 @@ func runSwarm(args []string) error {
 	}
 
 	return swarm.RunSwarm(swarm.RunOptions{
-		ConfigPath: *configPath,
-		Preset:     *preset,
-		WebUIAddr:  *webUIAddr,
+		ConfigPath:   *configPath,
+		Preset:       *preset,
+		WebUIAddr:    *webUIAddr,
 		ProgramsRoot: *programsRoot,
 	})
 }
