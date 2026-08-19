@@ -87,13 +87,14 @@ func TestLateToolResult(t *testing.T) {
 	late := event.New(event.TypeToolCompleted, "workspace", map[string]any{
 		"call_id": "c1", "name": "bash", "result": "late-out",
 	})
-	before := len(w.messages)
+	before := len(w.contextBuilder.Render())
 	w.handleToolResult(late)
 
-	if len(w.messages) != before+1 {
-		t.Fatalf("late result should append one message, got %d→%d", before, len(w.messages))
+	msgs := w.contextBuilder.Render()
+	if len(msgs) != before+1 {
+		t.Fatalf("late result should append one message, got %d->%d", before, len(msgs))
 	}
-	last := w.messages[len(w.messages)-1]
+	last := msgs[len(msgs)-1]
 	if last.Role != llm.RoleUser {
 		t.Fatalf("late result should be a user message, got role %q", last.Role)
 	}

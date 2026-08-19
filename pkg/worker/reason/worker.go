@@ -2,7 +2,6 @@ package reason
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
+	"github.com/54c1/niq/pkg/worker/reason/builder"
 )
 
 // EventConverter pairs an event pattern with a conversion function
@@ -28,6 +28,26 @@ type Config struct {
 	Programs        []program.Program
 	Bus             corebus.WorkerSideChannel
 	ReasoningEffort *string
+	// ContextBuilder is the worker's context construction core. nil uses
+	// the default accumulate builder (flat transcript). All calls happen
+	// under the worker's mutex; builders are passive.
+	ContextBuilder builder.ContextBuilder
+
+	// Context budget (see budget.go). ContextWindow is the model's window in
+	// tokens; 0 disables all budget handling. BudgetSoft/BudgetHard are
+	// occupancy ratios; KeepTail is how many recent messages compaction
+	// preserves. CompactDirective overrides the fallback summarizer prompt
+	// (program-driven digest formats plug in here).
+	ContextWindow    int
+	BudgetSoft       float64
+	BudgetHard       float64
+	KeepTail         int
+	CompactDirective string
+
+	// SeedMessages are applied to the builder at construction: the spawner's
+	// handover brief (goal goes to Programs instead - see context-builder.md
+	// §6). nil for a fresh worker.
+	SeedMessages []llm.Message
 }
 
 // Reason Worker is an event-driven reasoning node. It receives input
@@ -55,7 +75,17 @@ type Worker struct {
 	interruptReason         PreemptCause // why the current reasoning round was interrupted
 	immediateReasoningCause PreemptCause // why the next reasoning round was triggered; set by setImmediateReasoning, consumed by reason()
 	currentTraceID          string
-	messages                []llm.Message
+	contextBuilder          builder.ContextBuilder
+
+	// context budget state (budget.go); guarded by w.mu
+	contextWindow            int
+	budgetSoft               float64
+	budgetHard               float64
+	keepTail                 int
+	compactDirectiveOverride string
+	lastUsageTokens          int
+	budgetReminded           bool
+	isCompacting             bool
 
 	cancelReason context.CancelFunc
 	cancelRun    context.CancelFunc
@@ -92,6 +122,12 @@ func NewWorker(cfg Config) *Worker {
 		workerPublishEvents: make(map[string][]EventPublish),
 		programs:            cfg.Programs,
 		toolNameMap:         make(map[string]string),
+		contextBuilder: func() builder.ContextBuilder {
+			if cfg.ContextBuilder != nil {
+				return cfg.ContextBuilder
+			}
+			return builder.NewAccumulate()
+		}(),
 		reasoningEffort: func() *string {
 			if cfg.ReasoningEffort != nil {
 				return cfg.ReasoningEffort
@@ -99,6 +135,25 @@ func NewWorker(cfg Config) *Worker {
 			d := "medium"
 			return &d
 		}(),
+		contextWindow:            cfg.ContextWindow,
+		budgetSoft:               cfg.BudgetSoft,
+		budgetHard:               cfg.BudgetHard,
+		keepTail:                 cfg.KeepTail,
+		compactDirectiveOverride: cfg.CompactDirective,
+	}
+	if w.budgetSoft <= 0 {
+		w.budgetSoft = defaultBudgetSoft
+	}
+	if w.budgetHard <= 0 {
+		w.budgetHard = defaultBudgetHard
+	}
+	if w.keepTail <= 0 {
+		w.keepTail = defaultKeepTail
+	}
+
+	// Seed the transcript with the spawner's handover brief, if any.
+	if len(cfg.SeedMessages) > 0 {
+		w.contextBuilder.Apply(builder.InputEvent{Messages: cfg.SeedMessages})
 	}
 
 	w.initBuiltinTools()
@@ -161,30 +216,28 @@ func (w *Worker) Stop() error {
 	return nil
 }
 
-// snapshotState is the serializable execution state of a reason worker.
+// snapshotState is retained for backward compatibility: the durable state
+// is now owned by the context builder (its State/Restore round-trip the
+// transcript). Snapshot/Restore delegate to the builder directly; this
+// comment documents the migration for readers of older blobs.
 //
-// Today it captures only the reasoning transcript (messages) — the durable
-// state that survives a suspend/resume or crash recovery. As niq's meta-
-// capabilities grow, more of the worker's state becomes dynamically changeable
-// at runtime rather than fixed at construction (e.g. dynamically-registered
-// programs, tools negotiated at runtime, per-goal context strategies). Such
-// state — once it can mutate outside Config — must be added to snapshotState
-// so it survives a restart too. Restore must stay able to read older blobs
-// (missing fields are simply zero), so extend the struct rather than reshape it.
-type snapshotState struct {
-	Messages []llm.Message `json:"messages"`
-}
+// As niq's meta-capabilities grow, more of the worker's state becomes
+// dynamically changeable at runtime rather than fixed at construction. Such
+// state - once it can mutate outside Config - must be added to the builder's
+// snapshot so it survives a restart too. Restore must stay able to read
+// older blobs, so shapes grow rather than reshape.
 
 // Snapshot captures the worker's durable execution state so it can be resumed
 // later. The only state that cannot be re-derived is the reasoning transcript
-// (messages): tools and published events are re-learned from worker.ready on
-// restart, programs come from Config, and runtime flags (needReason,
-// isReasoning, activeTimeout, ...) are transient and reset on resume. Snapshot
-// is meaningful at an idle point (no in-flight reasoning round).
+// (owned by the context builder): tools and published events are re-learned
+// from worker.ready on restart, programs come from Config, and runtime flags
+// (needReason, isReasoning, activeTimeout, ...) are transient and reset on
+// resume. Snapshot is meaningful at an idle point (no in-flight reasoning
+// round).
 func (w *Worker) Snapshot() ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return json.Marshal(snapshotState{Messages: w.messages})
+	return w.contextBuilder.State()
 }
 
 // Restore rehydrates the worker from a Snapshot blob, restoring the reasoning
@@ -192,12 +245,7 @@ func (w *Worker) Snapshot() ([]byte, error) {
 // to a clean idle state: tools are re-discovered on Start, and the next input
 // event triggers reasoning.
 func (w *Worker) Restore(state []byte) error {
-	var s snapshotState
-	if err := json.Unmarshal(state, &s); err != nil {
-		return fmt.Errorf("reason %s: restore: %w", w.ID(), err)
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.messages = s.Messages
-	return nil
+	return w.contextBuilder.Restore(state)
 }

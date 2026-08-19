@@ -14,6 +14,7 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
+	"github.com/54c1/niq/pkg/worker/reason/builder"
 )
 
 // watch is the single event loop goroutine. It blocks on busCh waiting
@@ -118,11 +119,11 @@ func (w *Worker) handleAbort(_ event.Event) {
 
 	// Record the abort in the conversation transcript so the LLM
 	// knows what happened when the next round starts.
-	w.messages = append(w.messages, llm.Message{
+	w.contextBuilder.Apply(builder.InputEvent{Messages: []llm.Message{{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: fmt.Sprintf("[system] reasoning was aborted. %d tool call(s) parked.", len(tcs))}},
-	})
+	}}})
 
 	w.needReason = false
 }
@@ -222,10 +223,10 @@ func (w *Worker) recallToolCalls(tcs []*ToolCall) {
 }
 
 // appendInput appends messages and schedules a new round only when the system
-// is idle — no in-flight reasoning and no pending tool calls. Does not
+// is idle - no in-flight reasoning and no pending tool calls. Does not
 // interrupt or park anything. This is the least intrusive input mode (level 1).
 func (w *Worker) appendInput(msgs []llm.Message) {
-	w.messages = append(w.messages, msgs...)
+	w.contextBuilder.Apply(builder.InputEvent{Messages: msgs})
 
 	if !w.isReasoning && w.toolCallTracker.Resolved() {
 		w.needReason = true
@@ -237,7 +238,7 @@ func (w *Worker) appendInput(msgs []llm.Message) {
 // here. This is the moderate input mode (level 2) — it does not interrupt
 // an in-flight reasoning call, but ensures the next round responds promptly.
 func (w *Worker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
-	w.messages = append(w.messages, msgs...)
+	w.contextBuilder.Apply(builder.InputEvent{Messages: msgs})
 	w.immediateReasoningCause = cause
 	w.needReason = true
 }
@@ -247,7 +248,7 @@ func (w *Worker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
 // starts. This is the strongest input mode (level 3) — it interrupts the
 // current LLM call so the new input is handled immediately.
 func (w *Worker) interruptInput(msgs []llm.Message, cause PreemptCause) {
-	w.messages = append(w.messages, msgs...)
+	w.contextBuilder.Apply(builder.InputEvent{Messages: msgs})
 	w.interruptReason = cause
 	if w.cancelReason != nil {
 		w.cancelReason()
@@ -272,7 +273,11 @@ func (w *Worker) captureTraceID(evt event.Event) {
 func (w *Worker) parkPending(cause PreemptCause) []*ToolCall {
 	tcs := w.toolCallTracker.parkAll(cause)
 	for _, rc := range tcs {
-		w.updatePlaceholderToParked(rc)
+		w.contextBuilder.Apply(builder.ToolParked{
+			CallID: rc.CallID,
+			Name:   rc.Name,
+			Cause:  string(cause),
+		})
 	}
 	w.cancelTimeout()
 	return tcs

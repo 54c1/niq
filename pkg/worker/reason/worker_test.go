@@ -6,6 +6,7 @@ import (
 
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
+	"github.com/54c1/niq/pkg/worker/reason/builder"
 )
 
 // TestNewWorkerDefaults verifies a worker built with a minimal Config gets a
@@ -66,11 +67,14 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	w := NewWorker(Config{ID: "r1", Bus: ch})
 
 	// Seed a transcript: a user message, an assistant response, and a tool result.
-	w.messages = []llm.Message{
+	seed := []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hello"}}},
 		{Role: llm.RoleAssistant, StopReason: "stop", Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}},
 		{Role: llm.RoleToolResult, ToolCallID: "call_1", ToolName: "workspace.bash", IsError: false,
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "ok"}}},
+	}
+	for _, m := range seed {
+		w.contextBuilder.Apply(builder.AssistantOutput{Message: m}) // role preserved verbatim
 	}
 
 	blob, err := w.Snapshot()
@@ -87,11 +91,12 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	if len(fresh.messages) != len(w.messages) {
-		t.Fatalf("restored %d messages, want %d", len(fresh.messages), len(w.messages))
+	gotMsgs, wantMsgs := fresh.contextBuilder.Render(), w.contextBuilder.Render()
+	if len(gotMsgs) != len(wantMsgs) {
+		t.Fatalf("restored %d messages, want %d", len(gotMsgs), len(wantMsgs))
 	}
-	for i := range w.messages {
-		got, want := fresh.messages[i], w.messages[i]
+	for i := range wantMsgs {
+		got, want := gotMsgs[i], wantMsgs[i]
 		if got.Role != want.Role || got.StopReason != want.StopReason ||
 			got.ToolCallID != want.ToolCallID || got.ToolName != want.ToolName ||
 			got.IsError != want.IsError {
@@ -129,7 +134,7 @@ func TestSnapshotEmptyMessages(t *testing.T) {
 	if err := fresh.Restore(blob); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if len(fresh.messages) != 0 {
-		t.Fatalf("restored %d messages, want 0", len(fresh.messages))
+	if len(fresh.contextBuilder.Render()) != 0 {
+		t.Fatalf("restored %d messages, want 0", len(fresh.contextBuilder.Render()))
 	}
 }

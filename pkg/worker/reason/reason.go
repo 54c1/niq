@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/54c1/niq/core/event"
 	llm "github.com/54c1/niq/core/llm"
+	"github.com/54c1/niq/pkg/worker/reason/builder"
 )
 
 func (w *Worker) reason(ctx context.Context) {
@@ -80,7 +80,7 @@ func (w *Worker) prepareReasoning() (traceID string, req *llm.CompletionRequest)
 	tools := w.allTools()
 	c := &llm.Context{
 		SystemPrompt:    w.buildInstruction(),
-		Messages:        slices.Clone(w.messages),
+		Messages:        w.contextBuilder.Render(),
 		Tools:           toolDefs(w, tools),
 		ReasoningEffort: w.reasoningEffort,
 	}
@@ -106,9 +106,26 @@ func (w *Worker) openStream(reasonCtx context.Context, req *llm.CompletionReques
 		if !errors.As(callErr, &llmErr) {
 			return false, callErr
 		}
+		if llmErr.Type == llm.ErrorContextLength {
+			// Over the hard limit the provider rejected the request: compact
+			// synchronously (our own lock discipline) and retry once with the
+			// shrunk context. rebuildContext refreshes the request's messages.
+			if cerr := w.compactTranscript(reasonCtx, w.compactDirective(), w.keepTail); cerr == nil {
+				req.Context.Messages = w.snapshotMessages()
+				return true, nil
+			}
+		}
 		return llmErr.Type == llm.ErrorRateLimit || llmErr.Type == llm.ErrorTimeout, callErr
 	})
 	return stream, err
+}
+
+// snapshotMessages returns the current transcript under a brief lock, for
+// rebuilding a request after compaction.
+func (w *Worker) snapshotMessages() []llm.Message {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.contextBuilder.Render()
 }
 
 // retry executes fn up to maxRetries times with exponential backoff.
@@ -194,11 +211,11 @@ func (w *Worker) consumeStream(reasonCtx context.Context, stream *llm.EventStrea
 					blocks = append(blocks, llm.ContentBlock{Type: llm.ContentText, Text: partialText})
 				}
 				w.mu.Lock()
-				w.messages = append(w.messages, llm.Message{
+				w.contextBuilder.Apply(builder.PartialOutput{Message: llm.Message{
 					Role:       llm.RoleAssistant,
 					Content:    blocks,
 					StopReason: "interrupted",
-				})
+				}})
 				w.mu.Unlock()
 			}
 			streamDone = true
@@ -302,7 +319,11 @@ func (w *Worker) finishReasoning(ctx context.Context, traceID string, finalMsg l
 	log.Printf("[reason %s] LLM response: stop_reason=%s, content_blocks=%d",
 		w.ID(), finalMsg.StopReason, len(finalMsg.Content))
 
-	w.messages = append(w.messages, finalMsg)
+	w.contextBuilder.Apply(builder.AssistantOutput{Message: finalMsg})
+
+	// Budget check: record the round's usage and act on thresholds
+	// (soft: remind, hard: schedule compaction). Expects w.mu held.
+	w.recordUsage(ctx, finalMsg)
 
 	// Collect tool calls and thinking blocks from the response.
 	var toolCalls []llm.ContentBlock
@@ -361,7 +382,7 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 		}
 	}
 
-	w.insertPlaceholders(busCalls)
+	w.contextBuilder.Apply(builder.ToolPlaceholders{Calls: busCalls})
 
 	// Group tool calls by target worker, then publish tool.requested
 	// for each group. The bus routes each batch to the correct worker.
@@ -377,8 +398,13 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 	for _, tc := range busCalls {
 		t, ok := w.workerTools[tc.ToolName]
 		if !ok {
-			log.Printf("[reason %s] unavailable tool: %s — not dispatched", w.ID(), tc.ToolName)
-			w.replacePlaceholder(tc.ToolCallID, unavailableToolMessage(tc.ToolCallID, tc.ToolName))
+			log.Printf("[reason %s] unavailable tool: %s - not dispatched", w.ID(), tc.ToolName)
+			w.contextBuilder.Apply(builder.ToolResult{
+				CallID: tc.ToolCallID,
+				Name:   tc.ToolName,
+				Text:   "Unknown tool '" + tc.ToolName + "': not dispatched - tool not available.",
+				IsErr:  true,
+			})
 			continue
 		}
 		// Strip the worker ID prefix so the target worker receives

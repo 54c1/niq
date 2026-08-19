@@ -32,13 +32,15 @@ watch() — 单 goroutine 事件循环
 
 | 文件 | 职责 |
 |---|---|
-| `worker.go` | Worker struct, Config, NewWorker, Start, Stop |
+| `worker.go` | Worker struct, Config, NewWorker, Start, Stop, Snapshot/Restore（委托 contextBuilder） |
 | `watch.go` | watch 事件循环, process 分派, tryReason 决策门, 事件处理器, cancelTimeout |
-| `reason.go` | reason 推理核心, 推理生命周期发布 (start/end/response/thinking) |
-| `message.go` | LLM 消息构造 + transcript 管理: convertEvent/DefaultConverter, resultMessageFromEvent, park/fail/late, 占位符, handleDecisionMade |
+| `reason.go` | reason 推理核心, 推理生命周期发布 (start/end/response/thinking), ErrorContextLength 压缩重试 |
+| `message.go` | 事件->消息转换 + 生命周期->BuilderInput 翻译: convertEvent/DefaultConverter, updatePlaceholderFromEvent, appendLateResult |
+| `budget.go` | 上下文预算: token 账本 (Usage 快照), 软/硬阈值 (提醒/直接紧缩), 紧缩编排 (投影->摘要->应用), 投影 (剥 image/thinking/截断) |
 | `toolset.go` | 工具相关: initBuiltinTools, handleWorkerReady/Gone, allTools, toolDefs/sanitize, publishToolRequests, 内建工具路由 |
 | `tooltracker.go` | ToolCallTracker 状态机 (Add/handleResponse/parkAll/resolveLate)，仅管 map |
 | `systemprompt.go` | buildInstruction, system prompt 模板 |
+| `builder/` | **上下文构造器子包**：ContextBuilder 接口 + 封闭输入变体 (builder.go)、tool 配对不变式基座 (transcript.go)、默认累加实现 (accumulate.go)。转录的归属地，见 doc/design/reason_worker/context-builder.md |
 
 ## 核心概念
 
@@ -99,7 +101,16 @@ watch() — 单 goroutine 事件循环
 
 ### Transcript 保护
 
-LLM API 要求在 `assistant(tool_calls: [...])` 和后续 `tool_result(...)` 之间不能插入非 tool_result 消息。reason 采用**占位符方案**：产出工具调用时即刻在 messages 中插入 `tool_result(pending)` 占位。到达时 updatePlaceholderFromEvent 原地更新；park 时 updatePlaceholderToParked 原地替换为 park 说明；迟到时 appendLateResult 追加为 user 消息（带 cause 上下文，避免同一 call_id 的重复 tool 消息）。
+LLM API 要求在 `assistant(tool_calls: [...])` 和后续 `tool_result(...)` 之间不能插入非 tool_result 消息。这套不变式现在由 `builder` 子包持有（占位符方案）：产出工具调用时即刻插入 `tool_result(pending)` 占位；到达时原位更新；park 时原位替换为 park 说明；迟到时追加为 user 消息（避免同一 call_id 的重复 tool 消息）。reason worker 把生命周期翻译成封闭的 BuilderInput 变体递给 builder，不再直接写转录。
+
+### 上下文构造器与预算
+
+转录不是 worker 的核心状态，是 `builder.ContextBuilder` 的内部投影。默认实现是累加 builder（平铺转录 + cursor）。两个动词已接入：
+
+- **Compact（预算紧缩）**：每轮流式往返后从 `Usage` 记账（最近一次 Input+Output 快照），占比 ≥ 软线（0.85）注入提醒，LLM 调内建 `compress` 工具；≥ 硬线（0.97）系统直接紧缩；开流遇 `ErrorContextLength` 先紧缩再重试一次。摘要由自有 provider 非流式调用完成，directive 可由 program/配置覆盖（`compact_directive`），默认内置 fallback 模板；已有 digest 时走增量合并（早期目标不丢）。投影先行：剥 image/thinking、截断超长 tool_result。切点自动对齐配对边界。
+- **翻篇（`context.close_episode` 工具）**：keepTail=2 的 Compact（保留翻篇调用本身的 assistant(tool_calls)+占位符），新集从 digest 开始。
+
+紧缩在锁外满要（快照->摘要->应用三段），应用时重算 keepTail，摘要期间的并发追加不丢失；单飞（isCompacting）防重复。详见 doc/design/reason_worker/context-builder.md。
 
 ### abort 追回
 

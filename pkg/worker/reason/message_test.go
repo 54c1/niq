@@ -66,66 +66,9 @@ func TestResultOutcome(t *testing.T) {
 	}
 }
 
-// TestResultMessageFromEvent verifies a tool-result event becomes a
-// RoleToolResult message binding call_id/name and the extracted outcome.
-func TestResultMessageFromEvent(t *testing.T) {
-	evt := event.New(event.TypeToolCompleted, "workspace", map[string]any{
-		"call_id": "c1", "name": "bash", "result": "0",
-	})
-	m := resultMessageFromEvent(evt)
-	if m.Role != llm.RoleToolResult || m.ToolCallID != "c1" || m.ToolName != "bash" {
-		t.Fatalf("bad message binding: %+v", m)
-	}
-	if m.IsError {
-		t.Fatal("completed result should not be error")
-	}
-	if len(m.Content) != 1 || m.Content[0].Text != "0" {
-		t.Fatalf("bad content: %+v", m.Content)
-	}
-}
-
-// TestUnavailableToolMessage verifies an undispatchable tool produces a clear,
-// non-executed error message.
-func TestUnavailableToolMessage(t *testing.T) {
-	m := unavailableToolMessage("c1", "ghost.tool")
-	if m.Role != llm.RoleToolResult || m.ToolCallID != "c1" || m.ToolName != "ghost.tool" {
-		t.Fatalf("bad message: %+v", m)
-	}
-	if !m.IsError {
-		t.Fatal("unavailable tool must be an error")
-	}
-	if len(m.Content) == 0 {
-		t.Fatal("missing content")
-	}
-}
-
-// TestParkReason verifies each park cause maps to a distinct explanation.
-func TestParkReason(t *testing.T) {
-	cases := map[PreemptCause]string{
-		PreemptCauseTimeout:  "Tool call timed out",
-		PreemptCauseInput:    "Tool call interrupted by new input",
-		PreemptCauseAbort:    "Tool call aborted",
-		PreemptCauseReminder: "Tool call interrupted by reminder",
-	}
-	for cause, prefix := range cases {
-		if got := parkReason(cause); len(got) == 0 || got[:len(prefix)] != prefix {
-			t.Errorf("parkReason(%q) = %q, want prefix %q", cause, got, prefix)
-		}
-	}
-}
-
-// TestParkResultMessage verifies a parked call's placeholder is replaced with a
-// non-error explanation.
-func TestParkResultMessage(t *testing.T) {
-	rc := &ToolCall{CallID: "c1", Name: "bash", Status: ToolParked, ParkCause: PreemptCauseTimeout}
-	m := parkResultMessage(rc)
-	if m.IsError {
-		t.Fatal("parked message should not be an error")
-	}
-	if m.ToolCallID != "c1" || m.ToolName != "bash" {
-		t.Fatalf("bad binding: %+v", m)
-	}
-}
+// Placeholder-family behavior (resultMessage/parkReason/unavailable/
+// late-result, previously tested here) now lives in the builder package:
+// see builder/builder_test.go.
 
 // TestEventPatternMatches verifies the subscription matching semantics,
 // including type wildcards and optional source filtering.

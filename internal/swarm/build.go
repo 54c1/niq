@@ -116,15 +116,47 @@ func buildReasonSpec(ctx BuildContext, cfg worker.WorkerConfig) (worker.SpawnSpe
 	programs := parsePrograms(p, id)
 	events := parseEvents(p)
 
+	// Spawn seeding (context-builder.md §6): goal lands in the system prompt
+	// (program space, survives compaction); brief lands as the transcript's
+	// first message (working material, compactable). The two must stay
+	// separate or compaction threatens the goal itself.
+	goal, _ := p["goal"].(string)
+	brief, _ := p["brief"].(string)
+	if goal != "" {
+		programs = append(programSeed(goal), programs...)
+	}
+	var seedBrief []llm.Message
+	if brief != "" {
+		seedBrief = []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentBlock{{Type: llm.ContentText,
+				Text: "[handover brief from spawner]\n" + brief}},
+		}}
+	}
+
+	// Context budget params (optional; defaults live in the reason package).
+	contextWindow, _ := p["context_window"].(int)
+	budgetSoft, _ := p["budget_soft"].(float64)
+	budgetHard, _ := p["budget_hard"].(float64)
+	keepTail, _ := p["keep_tail"].(int)
+	compactDirective, _ := p["compact_directive"].(string)
+
 	connect := specConnect(ctx, id, "reason", pubAllow, subAllow)
 	build := func(ch corebus.WorkerSideChannel) worker.ManagedWorker {
-		return reason.NewWorker(reason.Config{
-			ID:              id,
-			Provider:        providerFromArgs(provider, apiKey, baseURL, model),
-			Programs:        programs,
-			EventConverters: events,
-			Bus:             ch,
+		w := reason.NewWorker(reason.Config{
+			ID:               id,
+			Provider:         providerFromArgs(provider, apiKey, baseURL, model),
+			Programs:         programs,
+			EventConverters:  events,
+			Bus:              ch,
+			ContextWindow:    contextWindow,
+			BudgetSoft:       budgetSoft,
+			BudgetHard:       budgetHard,
+			KeepTail:         keepTail,
+			CompactDirective: compactDirective,
+			SeedMessages:     seedBrief,
 		})
+		return w
 	}
 	cfg.Type = "reason"
 	return worker.SpawnSpec{
@@ -308,6 +340,19 @@ func providerFromArgs(provider, apiKey, baseURL, model string) llm.LLMProvider {
 		BaseURL: baseURL,
 		Model:   model,
 	})
+}
+
+// programSeed builds the goal instruction program for a spawned reason
+// worker. The goal lives in program space: rendered into the system prompt
+// every round, never compacted away.
+func programSeed(goal string) []programpkg.Program {
+	return []programpkg.Program{{
+		Meta: programpkg.Meta{
+			Name:        "goal",
+			ContentType: programpkg.ContentTypeInstruction,
+		},
+		EntryContent: programpkg.ProgramContent{Content: "# Goal\n\n" + goal},
+	}}
 }
 
 // parsePrograms extracts a simplified program list from spawn params.

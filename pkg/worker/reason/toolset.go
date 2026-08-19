@@ -63,6 +63,28 @@ func (w *Worker) initBuiltinTools() {
 				"properties": map[string]any{},
 			},
 		},
+		{
+			Name:        "compress",
+			Description: "Compact your own conversation history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"directive": map[string]any{"type": "string",
+						"description": "Optional focus for the summary, e.g. what must be preserved."},
+				},
+			},
+		},
+		{
+			Name:        "context.close_episode",
+			Description: "Close the current episode (turn the page): summarize the current conversation as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"carry": map[string]any{"type": "string",
+						"description": "Optional instruction for what to carry into the digest (conclusions, open items, references)."},
+				},
+			},
+		},
 	} {
 		t.Provider = w.ID()
 		w.workerTools[t.Name] = t
@@ -135,6 +157,10 @@ func (w *Worker) handleToolRequest(evt event.Event) {
 		w.handleSendMessage(callID, toolName, callerID, args)
 	case "list_workers":
 		w.handleListWorkers(callID, toolName, callerID, args)
+	case "compress":
+		w.handleCompactTool(callID, toolName, callerID, args, "compress")
+	case "context.close_episode":
+		w.handleCompactTool(callID, toolName, callerID, args, "close_episode")
 	default:
 		evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 			"call_id": callID, "name": toolName,
@@ -166,7 +192,12 @@ func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[s
 		fmt.Sprintf("message sent to %s", target))
 }
 
-// handleListWorkers returns all known workers with their tools and published
+// handleCompactTool serves the compress / context.close_episode built-ins:
+// both run the compaction loop asynchronously (the summary is an LLM call)
+// and reply with the digest stats when done. close_episode turns the page
+// (keepTail=1: the fresh episode keeps this call's own [pending] placeholder
+// so the tool result is visible to the model after replacement); compress
+// keeps the configured tail.
 // events, grouped by provider. It also triggers a worker.discover to refresh
 // the cache for the next call.
 func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[string]any) {
@@ -236,6 +267,51 @@ func (w *Worker) sendFail(callID, toolName, callerID, errMsg string) {
 	})
 	evt.TraceID = w.currentTraceID
 	_ = w.Channel.Send(context.Background(), evt, callerID)
+}
+
+// handleCompactTool serves compress / context.close_episode (see comment
+// above the tool registrations). Runs the compaction loop on its own
+// goroutine and replies to the caller via the bus when done.
+func (w *Worker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
+	// Capture the trace under the caller's lock; the goroutine runs unlocked.
+	traceID := w.currentTraceID
+
+	go func() {
+		directive := w.compactDirective()
+		if extra, _ := args["directive"].(string); kind == "compress" && extra != "" {
+			directive = directive + "\nCaller focus: " + extra
+		}
+		if carry, _ := args["carry"].(string); kind == "close_episode" && carry != "" {
+			directive = directive + "\nCarry into the new episode: " + carry
+		}
+
+		keepTail := w.keepTail
+		if kind == "close_episode" {
+			// Keep the closing tool call's assistant message + its [pending]
+			// placeholder so the result stays visible to the model after
+			// replacement (and the pairing invariant holds).
+			keepTail = 2
+		}
+
+		err := w.compactTranscript(context.Background(), directive, keepTail)
+
+		evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
+			"call_id": callID, "name": toolName,
+			"result": compactResultText(kind, err),
+		})
+		evt.TraceID = traceID
+		_ = w.Channel.Send(context.Background(), evt, callerID)
+	}()
+}
+
+func compactResultText(kind string, err error) string {
+	if err != nil {
+		return fmt.Sprintf("compaction failed: %v", err)
+	}
+	if kind == "close_episode" {
+		return "episode closed: history compacted into a carried digest; fresh context started"
+	}
+	return "history compacted: older messages replaced by a digest; recent messages kept"
 }
 
 // toolDefs builds the LLM tool definitions from the known tools, rebuilding the
