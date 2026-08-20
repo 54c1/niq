@@ -1,8 +1,8 @@
 // Event-to-message translation and transcript input translation.
 //
-// The reason worker's side of the builder boundary: events and internal
-// lifecycle state are translated here into data-only builder inputs. The
-// placeholder/pairing mechanics themselves live in the builder package.
+// The reason worker's side of the transcript boundary: events and internal
+// lifecycle state are translated here into data-only transcript inputs. The
+// placeholder/pairing mechanics themselves live in pkg/reason/transcript.
 //
 // Event -> user message:   convertEvent / DefaultConverter
 // Tool result event -> input: resultMessageInput (event-driven)
@@ -15,7 +15,8 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	reasonBase "github.com/54c1/niq/pkg/reason"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // isToolResultEvent reports whether the given event type is a tool
@@ -98,14 +99,14 @@ func (w *Worker) updatePlaceholderFromEvent(evt event.Event) {
 		return
 	}
 	text, isErr := resultOutcome(evt)
-	w.contextBuilder.Apply(builder.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
+	w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
 }
 
 // appendLateResult translates a late-arriving result on a parked call into a
 // LateResult input and applies it (appended as a user message - a second
 // tool_result for the same call_id would violate the pairing invariant).
 // parked carries the cause so the message explains why the call was parked.
-func (w *Worker) appendLateResult(parked *ToolCall, evt event.Event) {
+func (w *Worker) appendLateResult(parked *reasonBase.ToolCall, evt event.Event) {
 	callID, _ := evt.Payload["call_id"].(string)
 	name, _ := evt.Payload["name"].(string)
 	if callID == "" || name == "" {
@@ -118,6 +119,6 @@ func (w *Worker) appendLateResult(parked *ToolCall, evt event.Event) {
 	}
 
 	if text, _ := resultOutcome(evt); text != "" {
-		w.contextBuilder.Apply(builder.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
+		w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
 	}
 }

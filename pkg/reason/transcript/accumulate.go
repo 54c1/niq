@@ -1,7 +1,7 @@
-// AccumulateBuilder: the default context builder. A flat transcript of
-// llm.Messages plus a cursor; digest messages may appear among them after
+// AccumulateTranscript: the default transcript implementation. A flat
+// transcript of llm.Messages; digest messages may appear among them after
 // Compact. Passive and lock-free by contract: the caller serializes access.
-package builder
+package transcript
 
 import (
 	"encoding/json"
@@ -23,20 +23,19 @@ func digestMessage(digest string) llm.Message {
 	}
 }
 
-// AccumulateBuilder owns the working transcript. It is passive: the caller
-// serializes all access (the reason worker holds its mutex).
-type AccumulateBuilder struct {
+// AccumulateTranscript owns the working transcript. It is passive: the
+// caller serializes all access.
+type AccumulateTranscript struct {
 	messages []llm.Message
-	cursor   string // last seen event id; rebuild credential (step 4 wires it)
 }
 
-// NewAccumulate creates an empty builder.
-func NewAccumulate() *AccumulateBuilder {
-	return &AccumulateBuilder{}
+// NewAccumulateTranscript creates an empty transcript.
+func NewAccumulateTranscript() *AccumulateTranscript {
+	return &AccumulateTranscript{}
 }
 
 // Apply folds one lifecycle fact into the transcript.
-func (b *AccumulateBuilder) Apply(input BuilderInput) {
+func (b *AccumulateTranscript) Apply(input BuilderInput) {
 	switch in := input.(type) {
 	case InputEvent:
 		b.messages = append(b.messages, in.Messages...)
@@ -66,7 +65,7 @@ func (b *AccumulateBuilder) Apply(input BuilderInput) {
 
 // Render returns the transcript for the next LLM round. Identity projection:
 // callers must not mutate the returned slice.
-func (b *AccumulateBuilder) Render() []llm.Message {
+func (b *AccumulateTranscript) Render() []llm.Message {
 	return b.messages
 }
 
@@ -76,7 +75,7 @@ func (b *AccumulateBuilder) Render() []llm.Message {
 // beyond the tail to compact. The cut point is alignment-corrected: it never
 // falls between an assistant(tool_calls) message and its tool_result
 // messages (the pairing invariant would be violated on the tail side).
-func (b *AccumulateBuilder) Compact(digest string, keepTail int) {
+func (b *AccumulateTranscript) Compact(digest string, keepTail int) {
 	n := len(b.messages)
 	if n <= keepTail {
 		return
@@ -102,21 +101,19 @@ func alignCutToPairing(msgs []llm.Message, cut int) int {
 // only grow (older blobs stay readable).
 type accumulateState struct {
 	Messages []llm.Message `json:"messages"`
-	Cursor   string        `json:"cursor,omitempty"`
 }
 
 // State serializes the projection cache.
-func (b *AccumulateBuilder) State() ([]byte, error) {
-	return json.Marshal(accumulateState{Messages: b.messages, Cursor: b.cursor})
+func (b *AccumulateTranscript) State() ([]byte, error) {
+	return json.Marshal(accumulateState{Messages: b.messages})
 }
 
 // Restore rehydrates the transcript from a State blob.
-func (b *AccumulateBuilder) Restore(state []byte) error {
+func (b *AccumulateTranscript) Restore(state []byte) error {
 	var s accumulateState
 	if err := json.Unmarshal(state, &s); err != nil {
-		return fmt.Errorf("builder restore: %w", err)
+		return fmt.Errorf("transcript restore: %w", err)
 	}
 	b.messages = s.Messages
-	b.cursor = s.Cursor
 	return nil
 }

@@ -89,11 +89,11 @@ func (m *ToolCallTracker) Add(targetID string, toolCalls []llm.ContentBlock) {
 	}
 }
 
-// handleResponse reports whether a Pending call matched the tool result event
+// HandleResponse reports whether a Pending call matched the tool result event
 // and was removed from the tracker. It does not interpret the event — the
 // outcome (result / fail / reject reason) is read by the caller when building
 // the message.
-func (m *ToolCallTracker) handleResponse(evt event.Event) bool {
+func (m *ToolCallTracker) HandleResponse(evt event.Event) bool {
 	callID, _ := evt.Payload["call_id"].(string)
 	if callID == "" {
 		return false
@@ -110,10 +110,10 @@ func (m *ToolCallTracker) handleResponse(evt event.Event) bool {
 	return true
 }
 
-// parkAll marks every still-Pending call as Parked with the given cause and
+// ParkAll marks every still-Pending call as Parked with the given cause and
 // returns them. Parked calls are kept in the tracker so late results can be
 // matched and given context. Already-parked or resolved calls are untouched.
-func (m *ToolCallTracker) parkAll(cause PreemptCause) []*ToolCall {
+func (m *ToolCallTracker) ParkAll(cause PreemptCause) []*ToolCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -129,11 +129,11 @@ func (m *ToolCallTracker) parkAll(cause PreemptCause) []*ToolCall {
 	return tcs
 }
 
-// resolveLate matches a tool result event against a Parked call — a late
+// ResolveLate matches a tool result event against a Parked call — a late
 // result. The call is removed from the tracker and returned so the caller can
 // build a contextualized late-result message. Returns nil if no Parked call
 // matches.
-func (m *ToolCallTracker) resolveLate(evt event.Event) *ToolCall {
+func (m *ToolCallTracker) ResolveLate(evt event.Event) *ToolCall {
 	callID, _ := evt.Payload["call_id"].(string)
 	if callID == "" {
 		return nil

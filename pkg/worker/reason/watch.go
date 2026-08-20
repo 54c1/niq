@@ -14,7 +14,8 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	reasonBase "github.com/54c1/niq/pkg/reason"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // watch is the single event loop goroutine. It blocks on busCh waiting
@@ -98,7 +99,7 @@ func (w *Worker) process(_ context.Context, evt event.Event) {
 // the abort in the conversation transcript. needReason is cleared so no new
 // reasoning round starts until the next worker.input.
 func (w *Worker) handleAbort(_ event.Event) {
-	w.interruptReason = PreemptCauseAbort
+	w.interruptReason = reasonBase.PreemptCauseAbort
 
 	// Broadcast reason end
 	hadReasoning := w.cancelReason != nil
@@ -114,12 +115,12 @@ func (w *Worker) handleAbort(_ event.Event) {
 	}
 
 	// Park and recall tool calls
-	tcs := w.parkPending(PreemptCauseAbort)
+	tcs := w.parkPending(reasonBase.PreemptCauseAbort)
 	w.recallToolCalls(tcs)
 
 	// Record the abort in the conversation transcript so the LLM
 	// knows what happened when the next round starts.
-	w.contextBuilder.Apply(builder.InputEvent{Messages: []llm.Message{{
+	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: fmt.Sprintf("[system] reasoning was aborted. %d tool call(s) parked.", len(tcs))}},
@@ -142,7 +143,7 @@ func (w *Worker) handleTimeout(evt event.Event) {
 			Role:    llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "[system] tool call timeout"}},
 		}
-		w.scheduleInput([]llm.Message{msg}, PreemptCauseTimeout)
+		w.scheduleInput([]llm.Message{msg}, reasonBase.PreemptCauseTimeout)
 	}
 }
 
@@ -153,7 +154,7 @@ func (w *Worker) handleTimeout(evt event.Event) {
 func (w *Worker) handleReminder(evt event.Event) {
 	w.captureTraceID(evt)
 	msgs := w.convertEvent(evt)
-	w.scheduleInput(msgs, PreemptCauseReminder)
+	w.scheduleInput(msgs, reasonBase.PreemptCauseReminder)
 }
 
 // handleToolResult processes a tool.completed/failed/rejected event.
@@ -162,7 +163,7 @@ func (w *Worker) handleReminder(evt event.Event) {
 // Untracked call_ids (e.g. synthetic cancel responses) are ignored.
 func (w *Worker) handleToolResult(evt event.Event) {
 	// Normal resolution of a Pending call.
-	if w.toolCallTracker.handleResponse(evt) {
+	if w.toolCallTracker.HandleResponse(evt) {
 		w.updatePlaceholderFromEvent(evt)
 		// All tool calls resolved
 		if w.toolCallTracker.Resolved() {
@@ -173,7 +174,7 @@ func (w *Worker) handleToolResult(evt event.Event) {
 	}
 
 	// Late result for a Parked call.
-	if parked := w.toolCallTracker.resolveLate(evt); parked != nil {
+	if parked := w.toolCallTracker.ResolveLate(evt); parked != nil {
 		w.appendLateResult(parked, evt)
 	}
 }
@@ -197,13 +198,13 @@ func (w *Worker) handleInput(evt event.Event) {
 	case "append":
 		w.appendInput(msgs)
 	default:
-		w.interruptInput(msgs, PreemptCauseInput)
+		w.interruptInput(msgs, reasonBase.PreemptCauseInput)
 	}
 }
 
 // recallToolCalls best-effort cancels in-flight tool calls by sending a
 // tool.cancel event to each call's target worker.
-func (w *Worker) recallToolCalls(tcs []*ToolCall) {
+func (w *Worker) recallToolCalls(tcs []*reasonBase.ToolCall) {
 	byTarget := make(map[string][]string)
 	for _, rc := range tcs {
 		if rc.TargetID != "" {
@@ -226,7 +227,7 @@ func (w *Worker) recallToolCalls(tcs []*ToolCall) {
 // is idle - no in-flight reasoning and no pending tool calls. Does not
 // interrupt or park anything. This is the least intrusive input mode (level 1).
 func (w *Worker) appendInput(msgs []llm.Message) {
-	w.contextBuilder.Apply(builder.InputEvent{Messages: msgs})
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 
 	if !w.isReasoning && w.toolCallTracker.Resolved() {
 		w.needReason = true
@@ -237,8 +238,8 @@ func (w *Worker) appendInput(msgs []llm.Message) {
 // reasoning round. The pending tools are parked when reason() starts, not
 // here. This is the moderate input mode (level 2) — it does not interrupt
 // an in-flight reasoning call, but ensures the next round responds promptly.
-func (w *Worker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
-	w.contextBuilder.Apply(builder.InputEvent{Messages: msgs})
+func (w *Worker) scheduleInput(msgs []llm.Message, cause reasonBase.PreemptCause) {
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 	w.immediateReasoningCause = cause
 	w.needReason = true
 }
@@ -247,8 +248,8 @@ func (w *Worker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
 // and schedules a fresh round. The pending tools are parked when reason()
 // starts. This is the strongest input mode (level 3) — it interrupts the
 // current LLM call so the new input is handled immediately.
-func (w *Worker) interruptInput(msgs []llm.Message, cause PreemptCause) {
-	w.contextBuilder.Apply(builder.InputEvent{Messages: msgs})
+func (w *Worker) interruptInput(msgs []llm.Message, cause reasonBase.PreemptCause) {
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 	w.interruptReason = cause
 	if w.cancelReason != nil {
 		w.cancelReason()
@@ -270,10 +271,10 @@ func (w *Worker) captureTraceID(evt event.Event) {
 // parkPending parks all pending tool calls with the given cause and cancels the
 // current round's timeout timer. Returns the parked calls for callers that need
 // to recall them (e.g., handleAbort).
-func (w *Worker) parkPending(cause PreemptCause) []*ToolCall {
-	tcs := w.toolCallTracker.parkAll(cause)
+func (w *Worker) parkPending(cause reasonBase.PreemptCause) []*reasonBase.ToolCall {
+	tcs := w.toolCallTracker.ParkAll(cause)
 	for _, rc := range tcs {
-		w.contextBuilder.Apply(builder.ToolParked{
+		w.transcript.Apply(transcript.ToolParked{
 			CallID: rc.CallID,
 			Name:   rc.Name,
 			Cause:  string(cause),

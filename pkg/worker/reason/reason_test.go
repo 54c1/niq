@@ -7,7 +7,7 @@ import (
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // TestPrepareReasoningBuildsRequest verifies prepareReasoning parks leftover
@@ -21,7 +21,7 @@ func TestPrepareReasoningBuildsRequest(t *testing.T) {
 	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
 	})
-	w.contextBuilder.Apply(builder.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
+	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
 	w.mu.Unlock()
 
 	traceID, req := w.prepareReasoning()
@@ -84,7 +84,7 @@ func TestHandleToolCallsUnavailable(t *testing.T) {
 	}
 	// The transcript should contain the unavailable-tool tool_result.
 	noDispatch := false
-	for _, m := range w.contextBuilder.Render() {
+	for _, m := range w.transcript.Render() {
 		if m.ToolCallID == "c1" && m.IsError {
 			noDispatch = true
 		}

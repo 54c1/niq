@@ -7,9 +7,9 @@
 //	>= budget_soft -> guided: inject a reminder, the LLM calls the compress tool
 //	>= budget_hard -> direct: the system compacts without waiting for the LLM
 //
-// Compaction is orchestrated here, not in the builder: the summary is an LLM
+// Compaction is orchestrated here, not in the transcript: the summary is an LLM
 // call (seconds), so it runs outside w.mu - snapshot under lock, summarize
-// unlocked, apply under lock. The builder's Compact evaluates keepTail at
+// unlocked, apply under lock. The transcript's Compact evaluates keepTail at
 // apply time, so messages appended during summarization are preserved.
 //
 // Projection (fixed first step of any summarize): image blocks (base64, token
@@ -24,7 +24,7 @@ import (
 	"strings"
 
 	llm "github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // Budget defaults; overridable via Config.
@@ -36,7 +36,7 @@ const (
 
 // fallbackCompactDirective is the summarizer system prompt when no
 // program-provided directive is configured. The digest format is
-// program-driven by design (see context-builder.md §3.5); this is only the
+// program-driven by design (see context-transcript.md §3.5); this is only the
 // built-in fallback template.
 const fallbackCompactDirective = `Summarize the following reasoning transcript for continuation.
 Preserve: the task/goal, decisions made and their reasons, established facts (paths, ids, versions, errors),
@@ -65,7 +65,7 @@ func (w *Worker) recordUsage(ctx context.Context, msg llm.Message) {
 		w.budgetReminded = true
 		log.Printf("[reason %s] context soft budget %.0f%% (%d/%d tokens) - reminding",
 			w.ID(), ratio*100, w.lastUsageTokens, w.contextWindow)
-		w.contextBuilder.Apply(builder.InputEvent{Messages: []llm.Message{{
+		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText,
 				Text: fmt.Sprintf("[system] Context usage is at %d%% of the model window (%d/%d tokens). "+
@@ -100,7 +100,7 @@ func (w *Worker) compactTranscript(ctx context.Context, directive string, keepTa
 		return fmt.Errorf("compaction already in flight")
 	}
 	w.isCompacting = true
-	msgSnapshot := w.contextBuilder.Render()
+	msgSnapshot := w.transcript.Render()
 	projection := projectTranscript(msgSnapshot)
 	previousDigest := currentDigest(msgSnapshot)
 	w.mu.Unlock()
@@ -113,7 +113,7 @@ func (w *Worker) compactTranscript(ctx context.Context, directive string, keepTa
 		w.mu.Unlock()
 		return fmt.Errorf("summarize: %w", err)
 	}
-	w.contextBuilder.Compact(digest, keepTail)
+	w.transcript.Compact(digest, keepTail)
 	w.mu.Unlock()
 
 	log.Printf("[reason %s] transcript compacted (keepTail=%d, digest=%d chars, update=%v)",
@@ -172,7 +172,7 @@ func currentDigest(msgs []llm.Message) string {
 // projectTranscript renders a lossy-but-faithful projection of the transcript
 // for summarization: images and thinking stripped, tool results truncated,
 // one line per message. Keep in sync with the projection rules in
-// context-builder.md §5.3.
+// context-transcript.md §5.3.
 func projectTranscript(msgs []llm.Message) string {
 	const maxToolResult = 2000
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
+	reasonBase "github.com/54c1/niq/pkg/reason"
 )
 
 // TestInputDefaultTriggersReasoning verifies a default-mode input produces a
@@ -81,16 +82,16 @@ func TestLateToolResult(t *testing.T) {
 	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
 	})
-	w.toolCallTracker.parkAll(PreemptCauseTimeout)
+	w.toolCallTracker.ParkAll(reasonBase.PreemptCauseTimeout)
 	w.mu.Unlock()
 
 	late := event.New(event.TypeToolCompleted, "workspace", map[string]any{
 		"call_id": "c1", "name": "bash", "result": "late-out",
 	})
-	before := len(w.contextBuilder.Render())
+	before := len(w.transcript.Render())
 	w.handleToolResult(late)
 
-	msgs := w.contextBuilder.Render()
+	msgs := w.transcript.Render()
 	if len(msgs) != before+1 {
 		t.Fatalf("late result should append one message, got %d->%d", before, len(msgs))
 	}

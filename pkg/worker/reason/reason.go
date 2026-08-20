@@ -13,7 +13,8 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	llm "github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	reasonBase "github.com/54c1/niq/pkg/reason"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 func (w *Worker) reason(ctx context.Context) {
@@ -71,7 +72,7 @@ func (w *Worker) prepareReasoning() (traceID string, req *llm.CompletionRequest)
 	// from immediateReasoningCause if set, otherwise falls back to Input.
 	cause := w.immediateReasoningCause
 	if cause == "" {
-		cause = PreemptCauseInput
+		cause = reasonBase.PreemptCauseInput
 	}
 	w.immediateReasoningCause = ""
 	w.parkPending(cause)
@@ -80,7 +81,7 @@ func (w *Worker) prepareReasoning() (traceID string, req *llm.CompletionRequest)
 	tools := w.allTools()
 	c := &llm.Context{
 		SystemPrompt:    w.buildInstruction(),
-		Messages:        w.contextBuilder.Render(),
+		Messages:        w.transcript.Render(),
 		Tools:           toolDefs(w, tools),
 		ReasoningEffort: w.reasoningEffort,
 	}
@@ -125,7 +126,7 @@ func (w *Worker) openStream(reasonCtx context.Context, req *llm.CompletionReques
 func (w *Worker) snapshotMessages() []llm.Message {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.contextBuilder.Render()
+	return w.transcript.Render()
 }
 
 // retry executes fn up to maxRetries times with exponential backoff.
@@ -211,7 +212,7 @@ func (w *Worker) consumeStream(reasonCtx context.Context, stream *llm.EventStrea
 					blocks = append(blocks, llm.ContentBlock{Type: llm.ContentText, Text: partialText})
 				}
 				w.mu.Lock()
-				w.contextBuilder.Apply(builder.PartialOutput{Message: llm.Message{
+				w.transcript.Apply(transcript.PartialOutput{Message: llm.Message{
 					Role:       llm.RoleAssistant,
 					Content:    blocks,
 					StopReason: "interrupted",
@@ -319,7 +320,7 @@ func (w *Worker) finishReasoning(ctx context.Context, traceID string, finalMsg l
 	log.Printf("[reason %s] LLM response: stop_reason=%s, content_blocks=%d",
 		w.ID(), finalMsg.StopReason, len(finalMsg.Content))
 
-	w.contextBuilder.Apply(builder.AssistantOutput{Message: finalMsg})
+	w.transcript.Apply(transcript.AssistantOutput{Message: finalMsg})
 
 	// Budget check: record the round's usage and act on thresholds
 	// (soft: remind, hard: schedule compaction). Expects w.mu held.
@@ -382,7 +383,7 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 		}
 	}
 
-	w.contextBuilder.Apply(builder.ToolPlaceholders{Calls: busCalls})
+	w.transcript.Apply(transcript.ToolPlaceholders{Calls: busCalls})
 
 	// Group tool calls by target worker, then publish tool.requested
 	// for each group. The bus routes each batch to the correct worker.
@@ -399,7 +400,7 @@ func (w *Worker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlo
 		t, ok := w.workerTools[tc.ToolName]
 		if !ok {
 			log.Printf("[reason %s] unavailable tool: %s - not dispatched", w.ID(), tc.ToolName)
-			w.contextBuilder.Apply(builder.ToolResult{
+			w.transcript.Apply(transcript.ToolResult{
 				CallID: tc.ToolCallID,
 				Name:   tc.ToolName,
 				Text:   "Unknown tool '" + tc.ToolName + "': not dispatched - tool not available.",

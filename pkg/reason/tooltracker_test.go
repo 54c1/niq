@@ -31,13 +31,13 @@ func TestToolCallTrackerHandleResponse(t *testing.T) {
 	m := NewToolCallTracker()
 	m.Add("workspace", []llm.ContentBlock{tcBlock("a", "bash"), tcBlock("b", "read")})
 
-	if !m.handleResponse(resultEvent(event.TypeToolCompleted, "a")) {
+	if !m.HandleResponse(resultEvent(event.TypeToolCompleted, "a")) {
 		t.Fatal("handleResponse should match call a")
 	}
 	if m.Resolved() {
 		t.Fatal("still pending call b")
 	}
-	if !m.handleResponse(resultEvent(event.TypeToolFailed, "b")) {
+	if !m.HandleResponse(resultEvent(event.TypeToolFailed, "b")) {
 		t.Fatal("handleResponse should match call b")
 	}
 	if !m.Resolved() {
@@ -50,7 +50,7 @@ func TestToolCallTrackerHandleResponse(t *testing.T) {
 func TestToolCallTrackerHandleResponseUnknown(t *testing.T) {
 	m := NewToolCallTracker()
 	m.Add("workspace", []llm.ContentBlock{tcBlock("a", "bash")})
-	if m.handleResponse(resultEvent(event.TypeToolCompleted, "nope")) {
+	if m.HandleResponse(resultEvent(event.TypeToolCompleted, "nope")) {
 		t.Fatal("unknown call_id must not match")
 	}
 	if m.Resolved() {
@@ -63,9 +63,9 @@ func TestToolCallTrackerHandleResponseUnknown(t *testing.T) {
 func TestToolCallTrackerParkAll(t *testing.T) {
 	m := NewToolCallTracker()
 	m.Add("workspace", []llm.ContentBlock{tcBlock("a", "bash"), tcBlock("b", "read")})
-	m.handleResponse(resultEvent(event.TypeToolCompleted, "a")) // a resolved
+	m.HandleResponse(resultEvent(event.TypeToolCompleted, "a")) // a resolved
 
-	parked := m.parkAll(PreemptCauseTimeout)
+	parked := m.ParkAll(PreemptCauseTimeout)
 	if len(parked) != 1 || parked[0].CallID != "b" {
 		t.Fatalf("parkAll should park only pending call b, got %+v", parked)
 	}
@@ -82,12 +82,12 @@ func TestToolCallTrackerParkAll(t *testing.T) {
 func TestToolCallTrackerResolveLate(t *testing.T) {
 	m := NewToolCallTracker()
 	m.Add("workspace", []llm.ContentBlock{tcBlock("a", "bash")})
-	m.parkAll(PreemptCauseTimeout)
+	m.ParkAll(PreemptCauseTimeout)
 
-	if got := m.resolveLate(resultEvent(event.TypeToolCompleted, "a")); got == nil {
+	if got := m.ResolveLate(resultEvent(event.TypeToolCompleted, "a")); got == nil {
 		t.Fatal("late result should match parked call a")
 	}
-	if m.resolveLate(resultEvent(event.TypeToolCompleted, "z")) != nil {
+	if m.ResolveLate(resultEvent(event.TypeToolCompleted, "z")) != nil {
 		t.Fatal("late result for untracked call should be ignored")
 	}
 }

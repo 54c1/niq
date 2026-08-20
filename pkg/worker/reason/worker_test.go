@@ -6,7 +6,7 @@ import (
 
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // TestNewWorkerDefaults verifies a worker built with a minimal Config gets a
@@ -74,7 +74,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "ok"}}},
 	}
 	for _, m := range seed {
-		w.contextBuilder.Apply(builder.AssistantOutput{Message: m}) // role preserved verbatim
+		w.transcript.Apply(transcript.AssistantOutput{Message: m}) // role preserved verbatim
 	}
 
 	blob, err := w.Snapshot()
@@ -91,7 +91,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	gotMsgs, wantMsgs := fresh.contextBuilder.Render(), w.contextBuilder.Render()
+	gotMsgs, wantMsgs := fresh.transcript.Render(), w.transcript.Render()
 	if len(gotMsgs) != len(wantMsgs) {
 		t.Fatalf("restored %d messages, want %d", len(gotMsgs), len(wantMsgs))
 	}
@@ -134,7 +134,7 @@ func TestSnapshotEmptyMessages(t *testing.T) {
 	if err := fresh.Restore(blob); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if len(fresh.contextBuilder.Render()) != 0 {
-		t.Fatalf("restored %d messages, want 0", len(fresh.contextBuilder.Render()))
+	if len(fresh.transcript.Render()) != 0 {
+		t.Fatalf("restored %d messages, want 0", len(fresh.transcript.Render()))
 	}
 }

@@ -1,8 +1,8 @@
 // Transcript invariants: tool_call/tool_result pairing and the placeholder
-// family. Ported verbatim in behavior from the reason worker's message.go;
-// ownership of these invariants lives here so alternative strategies can
-// embed this base without re-deriving them.
-package builder
+// family. The reason worker translates its lifecycle into BuilderInput
+// variants; the pairing mechanics live here so alternative transcript
+// implementations can embed the same rules.
+package transcript
 
 import (
 	"fmt"

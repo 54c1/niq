@@ -10,7 +10,8 @@ import (
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/worker/reason/builder"
+	reasonBase "github.com/54c1/niq/pkg/reason"
+	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // EventConverter pairs an event pattern with a conversion function
@@ -28,10 +29,10 @@ type Config struct {
 	Programs        []program.Program
 	Bus             corebus.WorkerSideChannel
 	ReasoningEffort *string
-	// ContextBuilder is the worker's context construction core. nil uses
-	// the default accumulate builder (flat transcript). All calls happen
-	// under the worker's mutex; builders are passive.
-	ContextBuilder builder.ContextBuilder
+	// Transcript is the worker's context construction core. nil uses
+	// the default accumulate implementation (flat transcript). All calls happen
+	// under the worker's mutex; transcripts are passive.
+	Transcript transcript.Transcript
 
 	// Context budget (see budget.go). ContextWindow is the model's window in
 	// tokens; 0 disables all budget handling. BudgetSoft/BudgetHard are
@@ -45,7 +46,7 @@ type Config struct {
 	CompactDirective string
 
 	// SeedMessages are applied to the builder at construction: the spawner's
-	// handover brief (goal goes to Programs instead - see context-builder.md
+	// handover brief (goal goes to Programs instead - see context-transcript.md
 	// §6). nil for a fresh worker.
 	SeedMessages []llm.Message
 }
@@ -59,7 +60,7 @@ type Worker struct {
 	mu sync.Mutex
 
 	llmProvider     llm.LLMProvider
-	toolCallTracker *ToolCallTracker
+	toolCallTracker *reasonBase.ToolCallTracker
 	eventConverters []EventConverter
 
 	reasoningEffort     *string
@@ -71,11 +72,11 @@ type Worker struct {
 	started                 bool
 	needReason              bool
 	isReasoning             bool
-	activeTimeout           string       // current round's set_tool_timeout call_id, "" if none
-	interruptReason         PreemptCause // why the current reasoning round was interrupted
-	immediateReasoningCause PreemptCause // why the next reasoning round was triggered; set by setImmediateReasoning, consumed by reason()
+	activeTimeout           string                  // current round's set_tool_timeout call_id, "" if none
+	interruptReason         reasonBase.PreemptCause // why the current reasoning round was interrupted
+	immediateReasoningCause reasonBase.PreemptCause // why the next reasoning round was triggered; set by setImmediateReasoning, consumed by reason()
 	currentTraceID          string
-	contextBuilder          builder.ContextBuilder
+	transcript              transcript.Transcript
 
 	// context budget state (budget.go); guarded by w.mu
 	contextWindow            int
@@ -116,17 +117,17 @@ func NewWorker(cfg Config) *Worker {
 	w := &Worker{
 		BaseWorker:          worker.NewBaseWorker(cfg.ID, subs, cfg.Bus),
 		llmProvider:         cfg.Provider,
-		toolCallTracker:     NewToolCallTracker(),
+		toolCallTracker:     reasonBase.NewToolCallTracker(),
 		eventConverters:     cfg.EventConverters,
 		workerTools:         make(map[string]worker.Tool),
 		workerPublishEvents: make(map[string][]EventPublish),
 		programs:            cfg.Programs,
 		toolNameMap:         make(map[string]string),
-		contextBuilder: func() builder.ContextBuilder {
-			if cfg.ContextBuilder != nil {
-				return cfg.ContextBuilder
+		transcript: func() transcript.Transcript {
+			if cfg.Transcript != nil {
+				return cfg.Transcript
 			}
-			return builder.NewAccumulate()
+			return transcript.NewAccumulateTranscript()
 		}(),
 		reasoningEffort: func() *string {
 			if cfg.ReasoningEffort != nil {
@@ -153,7 +154,7 @@ func NewWorker(cfg Config) *Worker {
 
 	// Seed the transcript with the spawner's handover brief, if any.
 	if len(cfg.SeedMessages) > 0 {
-		w.contextBuilder.Apply(builder.InputEvent{Messages: cfg.SeedMessages})
+		w.transcript.Apply(transcript.InputEvent{Messages: cfg.SeedMessages})
 	}
 
 	w.initBuiltinTools()
@@ -237,7 +238,7 @@ func (w *Worker) Stop() error {
 func (w *Worker) Snapshot() ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.contextBuilder.State()
+	return w.transcript.State()
 }
 
 // Restore rehydrates the worker from a Snapshot blob, restoring the reasoning
@@ -247,5 +248,5 @@ func (w *Worker) Snapshot() ([]byte, error) {
 func (w *Worker) Restore(state []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.contextBuilder.Restore(state)
+	return w.transcript.Restore(state)
 }

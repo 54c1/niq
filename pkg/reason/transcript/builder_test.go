@@ -1,4 +1,4 @@
-package builder
+package transcript
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ func toolCall(callID, name string) llm.ContentBlock {
 // transcript order and shapes: input, assistant output, placeholders,
 // in-place result replacement, park replacement, late result.
 func TestApplyLifecycle(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 
 	b.Apply(InputEvent{Messages: []llm.Message{userMsg("hi")}})
 	b.Apply(AssistantOutput{Message: assistantMsg("hello")})
@@ -69,7 +69,7 @@ func TestApplyLifecycle(t *testing.T) {
 // TestPartialOutputPreserved verifies interrupted-round content lands in the
 // transcript like any assistant output.
 func TestPartialOutputPreserved(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 	b.Apply(PartialOutput{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "interrupted",
 		Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "partial"}},
@@ -82,7 +82,7 @@ func TestPartialOutputPreserved(t *testing.T) {
 
 // TestStateRestoreRoundTrip verifies the snapshot cache round-trips.
 func TestStateRestoreRoundTrip(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 	b.Apply(InputEvent{Messages: []llm.Message{userMsg("hello")}})
 	b.Apply(AssistantOutput{Message: assistantMsg("hi")})
 
@@ -90,7 +90,7 @@ func TestStateRestoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("State: %v", err)
 	}
-	fresh := NewAccumulate()
+	fresh := NewAccumulateTranscript()
 	if err := fresh.Restore(state); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestStateRestoreRoundTrip(t *testing.T) {
 // TestToolResultUnknownCallIsSafe verifies a ToolResult for an unknown
 // call_id does not corrupt the transcript (no matching placeholder: no-op).
 func TestToolResultUnknownCallIsSafe(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 	b.Apply(InputEvent{Messages: []llm.Message{userMsg("hi")}})
 	b.Apply(ToolResult{CallID: "ghost", Name: "x", Text: "y"})
 	if got := b.Render(); len(got) != 1 {
@@ -121,7 +121,7 @@ func TestToolResultUnknownCallIsSafe(t *testing.T) {
 // before the last keepTail messages with a digest message, tail preserved in
 // order, and that it is a no-op when the transcript is already within the tail.
 func TestCompactAppliesDigestAndKeepsTail(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 	for i := 0; i < 5; i++ {
 		b.Apply(InputEvent{Messages: []llm.Message{userMsg(fmt.Sprintf("m%d", i))}})
 	}
@@ -151,7 +151,7 @@ func TestCompactAppliesDigestAndKeepsTail(t *testing.T) {
 // assistant(tool_calls) and its placeholder absorbs the placeholder into the
 // compacted side.
 func TestCompactAlignsCutToPairing(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 	b.Apply(InputEvent{Messages: []llm.Message{userMsg("q")}})
 	b.Apply(AssistantOutput{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
@@ -184,7 +184,7 @@ func TestCompactAlignsCutToPairing(t *testing.T) {
 // TestCompactTurnsThePage verifies keepTail = 0 starts a fresh episode from
 // the digest alone.
 func TestCompactTurnsThePage(t *testing.T) {
-	b := NewAccumulate()
+	b := NewAccumulateTranscript()
 	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
 	b.Apply(AssistantOutput{Message: assistantMsg("b")})
 
