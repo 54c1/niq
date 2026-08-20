@@ -44,13 +44,13 @@ type Config struct {
 // subscriptions and converters.
 //
 // Start/Stop/Snapshot/Restore and the whole reasoning behavior are inherited
-// from BaseReasonWorker; this shell only assembles a Worker from Config.
+// from BaseReasonWorker; this worker only assembles a Worker from Config.
 type Worker struct {
 	*reasonBase.BaseReasonWorker
 }
 
-// Re-exports for callers (swarm) that import the generic reason worker by its
-// shell package name.
+// Re-exports for callers (swarm) that import the generic reason worker by
+// its package name.
 type EventConverter = reasonBase.EventConverter
 
 // DefaultConverter formats an event as a plain-text user message.

@@ -8,7 +8,7 @@
 // BaseReasonWorker embeds worker.BaseWorker, so it is a bus worker: it has an
 // id, subscriptions and a channel, and can broadcast/send events. What it
 // does NOT decide is *which* events to subscribe to or *which* tools to expose
-// as built-ins — the embedding worker adds those in its own shell.
+// as built-ins — each embedding worker does.
 package reason
 
 import (
