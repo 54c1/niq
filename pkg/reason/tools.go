@@ -181,12 +181,7 @@ func (w *BaseReasonWorker) handleSendMessage(callID, toolName, callerID string, 
 		fmt.Sprintf("message sent to %s", target))
 }
 
-// handleCompactTool serves the compress / context.close_episode built-ins:
-// both run the compaction loop asynchronously (the summary is an LLM call)
-// and reply with the digest stats when done. close_episode turns the page
-// (keepTail=1: the fresh episode keeps this call's own [pending] placeholder
-// so the tool result is visible to the model after replacement); compress
-// keeps the configured tail.
+// handleListWorkers returns all known workers with their tools and published
 // events, grouped by provider. It also triggers a worker.discover to refresh
 // the cache for the next call.
 func (w *BaseReasonWorker) handleListWorkers(callID, toolName, callerID string, args map[string]any) {
@@ -258,9 +253,12 @@ func (w *BaseReasonWorker) sendFail(callID, toolName, callerID, errMsg string) {
 	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
-// handleCompactTool serves compress / context.close_episode (see comment
-// above the tool registrations). Runs the compaction loop on its own
-// goroutine and replies to the caller via the bus when done.
+// handleCompactTool serves compress / context.close_episode: both run the
+// compaction asynchronously (the summary is an LLM call) on their own goroutine
+// and reply via the bus when done. close_episode turns the page (keepTail=2:
+// keeps this call's assistant tool_call + [pending] placeholder so the result
+// stays visible to the model and the pairing invariant holds); compress keeps
+// the configured tail.
 func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
 	// Capture the trace under the caller's lock; the goroutine runs unlocked.
 	traceID := w.currentTraceID

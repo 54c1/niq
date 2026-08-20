@@ -1,5 +1,5 @@
-// Package reason provides the domain-agnostic reasoning loop shared by
-// reason-family workers: the reasoning round (LLM call + lifecycle
+// Package reason provides the domain-agnostic reasoning core shared by
+// reason-family workers: the reasoning round (an LLM call + lifecycle
 // broadcasts), budget handling, tool-call tracking, tool dispatch and system
 // prompt construction. A reason-family worker (the generic reason worker, a
 // future coding worker, ...) embeds BaseReasonWorker and layers on its own

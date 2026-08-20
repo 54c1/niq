@@ -39,12 +39,12 @@ type Config struct {
 }
 
 // Worker is the generic reason-family worker: it embeds the domain-agnostic
-// BaseReasonWorker (reasoning loop, budget, tool dispatch, system prompt,
+// BaseReasonWorker (the reasoning round, budget, tool dispatch, system prompt,
 // lifecycle) and is registered as a "reason" worker. A future coding worker
 // embeds BaseReasonWorker the same way with its own built-ins and converters.
 //
-// Start/Stop/Snapshot/Restore and the whole reasoning loop are inherited from
-// BaseReasonWorker; this shell only assembles a Worker from Config.
+// Start/Stop/Snapshot/Restore and the whole reasoning behavior are inherited
+// from BaseReasonWorker; this shell only assembles a Worker from Config.
 type Worker struct {
 	*reasonBase.BaseReasonWorker
 }
