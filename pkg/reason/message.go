@@ -15,7 +15,6 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
-	reasonBase "github.com/54c1/niq/pkg/reason"
 	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
@@ -27,7 +26,7 @@ func isToolResultEvent(typ event.EventType) bool {
 
 // convertEvent routes an event through the registered EventConverters.
 // Matching uses the subscription's full semantics (type + optional source).
-func (w *Worker) convertEvent(evt event.Event) []llm.Message {
+func (w *BaseReasonWorker) convertEvent(evt event.Event) []llm.Message {
 	for _, h := range w.eventConverters {
 		if h.Pattern.Matches(evt) {
 			return h.Converter(evt)
@@ -92,21 +91,21 @@ func resultOutcome(evt event.Event) (string, bool) {
 
 // updatePlaceholderFromEvent translates a tool result event into a
 // ToolResult input and applies it, replacing the [pending] placeholder.
-func (w *Worker) updatePlaceholderFromEvent(evt event.Event) {
+func (w *BaseReasonWorker) updatePlaceholderFromEvent(evt event.Event) {
 	callID, _ := evt.Payload["call_id"].(string)
 	name, _ := evt.Payload["name"].(string)
 	if callID == "" {
 		return
 	}
 	text, isErr := resultOutcome(evt)
-	w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
+	w.Transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
 }
 
 // appendLateResult translates a late-arriving result on a parked call into a
 // LateResult input and applies it (appended as a user message - a second
 // tool_result for the same call_id would violate the pairing invariant).
 // parked carries the cause so the message explains why the call was parked.
-func (w *Worker) appendLateResult(parked *reasonBase.ToolCall, evt event.Event) {
+func (w *BaseReasonWorker) appendLateResult(parked *ToolCall, evt event.Event) {
 	callID, _ := evt.Payload["call_id"].(string)
 	name, _ := evt.Payload["name"].(string)
 	if callID == "" || name == "" {
@@ -119,6 +118,6 @@ func (w *Worker) appendLateResult(parked *reasonBase.ToolCall, evt event.Event) 
 	}
 
 	if text, _ := resultOutcome(evt); text != "" {
-		w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
+		w.Transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
 	}
 }

@@ -61,7 +61,7 @@ var systemPromptTmpl = template.Must(
 // buildInstruction executes the system prompt template with the worker's
 // current programs. Instruction Programs provide full content; Playbook
 // Programs provide only metadata.
-func (w *Worker) buildInstruction() string {
+func (w *BaseReasonWorker) buildInstruction() string {
 	var data templateData
 	data.WorkerID = w.ID()
 

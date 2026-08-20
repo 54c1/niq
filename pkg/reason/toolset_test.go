@@ -21,9 +21,9 @@ func TestSanitizeToolName(t *testing.T) {
 // TestDesanitizeToolName verifies the sanitized→original mapping round-trips
 // through the toolNameMap built by toolDefs.
 func TestDesanitizeToolName(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
-	w.workerTools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
-	tools := []worker.Tool{w.workerTools["workspace.bash"]}
+	w := newBaseForTest(nil, newTestChannel())
+	w.Tools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
+	tools := []worker.Tool{w.Tools["workspace.bash"]}
 	_ = toolDefs(w, tools)
 
 	if got := desanitizeToolName(w, "workspace_bash"); got != "workspace.bash" {
@@ -38,7 +38,7 @@ func TestDesanitizeToolName(t *testing.T) {
 // TestHandleWorkerReadyAndGone verifies tools and published events are learned
 // from worker.ready and forgotten on worker.gone.
 func TestHandleWorkerReadyAndGone(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
+	w := newBaseForTest(nil, newTestChannel())
 
 	ready := event.New(event.TypeWorkerReady, "workspace", map[string]any{
 		"worker_id": "workspace",
@@ -52,19 +52,19 @@ func TestHandleWorkerReadyAndGone(t *testing.T) {
 	w.handleWorkerReady(ready)
 
 	// Tool is prefixed with the worker ID.
-	if _, ok := w.workerTools["workspace.bash"]; !ok {
-		t.Fatalf("expected workspace.bash tool, got %+v", keys(w.workerTools))
+	if _, ok := w.Tools["workspace.bash"]; !ok {
+		t.Fatalf("expected workspace.bash tool, got %+v", keys(w.Tools))
 	}
-	if _, ok := w.workerPublishEvents["workspace"]; !ok {
+	if _, ok := w.PublishMap["workspace"]; !ok {
 		t.Fatal("expected published events for workspace")
 	}
 
 	gone := event.New(event.TypeWorkerGone, "host", map[string]any{"worker_id": "workspace"})
 	w.handleWorkerGone(gone)
-	if _, ok := w.workerTools["workspace.bash"]; ok {
+	if _, ok := w.Tools["workspace.bash"]; ok {
 		t.Fatal("tool should be removed after worker.gone")
 	}
-	if _, ok := w.workerPublishEvents["workspace"]; ok {
+	if _, ok := w.PublishMap["workspace"]; ok {
 		t.Fatal("publishes should be removed after worker.gone")
 	}
 }

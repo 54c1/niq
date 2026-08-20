@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
@@ -54,19 +53,19 @@ func TestSoftBudgetInjectsReminder(t *testing.T) {
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop",
 			Usage:   &llm.Usage{InputTokens: 900, OutputTokens: 10},
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "ok"}}}}
-	w := NewWorker(Config{ID: "r1", Provider: prov, Bus: newMockChannel(),
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
 		ContextWindow: 1000, BudgetSoft: 0.85, BudgetHard: 0.97})
 
 	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 900, OutputTokens: 10}})
 
-	msgs := w.transcript.Render()
+	msgs := w.Transcript.Render()
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Content[0].Text, "91%") {
 		t.Fatalf("expected one budget reminder, got %+v", msgs)
 	}
 
 	// Same side of the threshold: no duplicate reminder.
 	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 950, OutputTokens: 5}})
-	if got := len(w.transcript.Render()); got != 1 {
+	if got := len(w.Transcript.Render()); got != 1 {
 		t.Fatalf("reminder should fire once per crossing, got %d messages", got)
 	}
 }
@@ -76,12 +75,12 @@ func TestSoftBudgetInjectsReminder(t *testing.T) {
 func TestHardBudgetCompacts(t *testing.T) {
 	prov := &summarizeProvider{summarized: "hard-budget",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
-	w := NewWorker(Config{ID: "r1", Provider: prov, Bus: newMockChannel(),
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
 		ContextWindow: 1000, BudgetSoft: 0.85, BudgetHard: 0.97, KeepTail: 2})
 
 	seed := func(n int) {
 		for i := 0; i < n; i++ {
-			w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 			}})
 		}
@@ -92,14 +91,14 @@ func TestHardBudgetCompacts(t *testing.T) {
 
 	// Poll under the worker lock: Render() is only safe with w.mu held
 	// (builders are passive; the caller serializes access).
-	waitCond(t, timeout2s, func() bool {
+	waitCond(t, testTimeout, func() bool {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		msgs := w.transcript.Render()
+		msgs := w.Transcript.Render()
 		return len(msgs) == 3 && strings.Contains(msgs[0].Content[0].Text, "DIGEST")
 	}, "compaction to apply")
 
-	msgs := w.transcript.Render()
+	msgs := w.Transcript.Render()
 	if msgs[1].Content[0].Text != "e" || msgs[2].Content[0].Text != "f" {
 		t.Fatalf("keepTail=2 should keep last two messages, got %q %q",
 			msgs[1].Content[0].Text, msgs[2].Content[0].Text)
@@ -109,22 +108,20 @@ func TestHardBudgetCompacts(t *testing.T) {
 	}
 }
 
-const timeout2s = 2 * time.Second
-
 // TestCompactToolClosesEpisode verifies the context.close_episode built-in:
 // keepTail=1 keeps the call's own placeholder, the digest heads the fresh
 // episode, and a completed tool result is delivered via the bus.
 func TestCompactToolClosesEpisode(t *testing.T) {
 	prov := &summarizeProvider{summarized: "episode",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
-	ch := newMockChannel()
-	w := NewWorker(Config{ID: "r1", Provider: prov, Bus: ch,
+	ch := newTestChannel()
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: ch,
 		ContextWindow: 1000})
 
 	// Seed an episode and the call's own placeholder.
 	seed := func(n int) {
 		for i := 0; i < n; i++ {
-			w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 			}})
 		}
@@ -132,11 +129,11 @@ func TestCompactToolClosesEpisode(t *testing.T) {
 	seed(4)
 	// The closing call's assistant message + placeholder, as
 	// handleToolCalls produces them (pairing invariant holds in the tail).
-	w.transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
+	w.Transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
 		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_close_episode"}},
 	}})
-	w.transcript.Apply(transcript.ToolPlaceholders{Calls: []llm.ContentBlock{
+	w.Transcript.Apply(transcript.ToolPlaceholders{Calls: []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_close_episode"},
 	}})
 
@@ -145,7 +142,7 @@ func TestCompactToolClosesEpisode(t *testing.T) {
 	w.mu.Unlock()
 
 	// Tool completion arrives on the bus.
-	waitCond(t, timeout2s, func() bool {
+	waitCond(t, testTimeout, func() bool {
 		for _, e := range ch.eventsOf(event.TypeToolCompleted) {
 			if e.Payload["call_id"] == "call_ep" {
 				return true
@@ -155,7 +152,7 @@ func TestCompactToolClosesEpisode(t *testing.T) {
 	}, "close_episode tool completion")
 
 	// Fresh episode: digest + the closing assistant tool_call + placeholder.
-	msgs := w.transcript.Render()
+	msgs := w.Transcript.Render()
 	if len(msgs) != 3 {
 		t.Fatalf("fresh episode should be digest + tool_call + placeholder, got %d: %+v", len(msgs), msgs)
 	}
@@ -172,11 +169,11 @@ func TestCompactToolClosesEpisode(t *testing.T) {
 func TestCompactionSingleFlight(t *testing.T) {
 	prov := &summarizeProvider{summarized: "single",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
-	w := NewWorker(Config{ID: "r1", Provider: prov, Bus: newMockChannel(),
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
 		ContextWindow: 1000})
 
 	for i := 0; i < 4; i++ {
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "x"}}},
 		}})
 	}
@@ -228,16 +225,16 @@ func TestProjectTranscriptStrips(t *testing.T) {
 func TestCompactionUpdateMode(t *testing.T) {
 	prov := &summarizeProvider{summarized: "v2",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
-	w := NewWorker(Config{ID: "r1", Provider: prov, Bus: newMockChannel(),
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
 		ContextWindow: 1000})
 
 	// Seed a transcript already headed by a digest (previous compaction).
-	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+	w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: "[context digest] v1: goal=fix bug; done=analysis"}}},
 	}})
 	for i := 0; i < 4; i++ {
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "step"}}},
 		}})
 	}
@@ -254,7 +251,7 @@ func TestCompactionUpdateMode(t *testing.T) {
 		t.Fatalf("update-mode directive missing, prompt: %q", prompt)
 	}
 	// New head carries the v2 digest.
-	msgs := w.transcript.Render()
+	msgs := w.Transcript.Render()
 	if !strings.Contains(msgs[0].Content[0].Text, "DIGEST(v2)") {
 		t.Fatalf("updated digest head expected: %+v", msgs[0])
 	}
@@ -271,12 +268,12 @@ func TestCurrentDigestNegative(t *testing.T) {
 
 // (messages only, no cursor) restores cleanly - Restore must read older blobs.
 func TestSnapshotOldBlobCompatibility(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
+	w := NewBaseReasonWorker(Config{ID: "r1", Bus: newTestChannel()})
 	old := `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
 	if err := w.Restore([]byte(old)); err != nil {
 		t.Fatalf("old blob restore: %v", err)
 	}
-	msgs := w.transcript.Render()
+	msgs := w.Transcript.Render()
 	if len(msgs) != 1 || msgs[0].Content[0].Text != "hello" {
 		t.Fatalf("old blob content lost: %+v", msgs)
 	}

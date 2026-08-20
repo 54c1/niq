@@ -14,14 +14,14 @@ import (
 // tools, snapshots messages, and builds a completion request with the worker's
 // ID instruction and tool set.
 func TestPrepareReasoningBuildsRequest(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
+	w := newBaseForTest(nil, nil)
 	// Seed a trace and a pending tool call that should be parked at reasoning start.
 	w.mu.Lock()
 	w.currentTraceID = "trace1"
 	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
 	})
-	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
+	w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
 	w.mu.Unlock()
 
 	traceID, req := w.prepareReasoning()
@@ -43,9 +43,9 @@ func TestPrepareReasoningBuildsRequest(t *testing.T) {
 // TestHandleToolCallsDispatches verifies tool calls are grouped by target and a
 // tool.requested is sent to each provider.
 func TestHandleToolCallsDispatches(t *testing.T) {
-	ch := newMockChannel()
-	w := NewWorker(Config{ID: "r1", Bus: ch})
-	w.workerTools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
+	ch := newTestChannel()
+	w := newBaseForTest(nil, ch)
+	w.Tools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
 
 	calls := []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "workspace.bash"},
@@ -69,8 +69,8 @@ func TestHandleToolCallsDispatches(t *testing.T) {
 // TestHandleToolCallsUnavailable verifies an unknown tool is failed in place
 // (placeholder replaced) and NOT dispatched.
 func TestHandleToolCallsUnavailable(t *testing.T) {
-	ch := newMockChannel()
-	w := NewWorker(Config{ID: "r1", Bus: ch})
+	ch := newTestChannel()
+	w := newBaseForTest(nil, ch)
 	// No workerTools registered — every call is unavailable.
 
 	calls := []llm.ContentBlock{
@@ -84,7 +84,7 @@ func TestHandleToolCallsUnavailable(t *testing.T) {
 	}
 	// The transcript should contain the unavailable-tool tool_result.
 	noDispatch := false
-	for _, m := range w.transcript.Render() {
+	for _, m := range w.Transcript.Render() {
 		if m.ToolCallID == "c1" && m.IsError {
 			noDispatch = true
 		}
@@ -97,7 +97,7 @@ func TestHandleToolCallsUnavailable(t *testing.T) {
 // TestConsumeStreamSummarizesText verifies consumeStream accumulates text
 // deltas and returns normally when the stream ends.
 func TestConsumeStreamSummarizesText(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
+	w := newBaseForTest(nil, nil)
 	es := llm.NewEventStream()
 	go func() {
 		es.Push(llm.EventTextStart{})
@@ -146,7 +146,7 @@ func TestRetrySucceeds(t *testing.T) {
 // TestFinalMessageReturns verifies finalMessage returns the stream's final
 // message promptly (the 5s hang-guard is not exercised in the happy path).
 func TestFinalMessageReturns(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
+	w := newBaseForTest(nil, nil)
 	es := llm.NewEventStream()
 	go func() {
 		es.End(llm.Message{Role: llm.RoleAssistant, StopReason: "stop"})

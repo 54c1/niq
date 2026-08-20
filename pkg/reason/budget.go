@@ -27,13 +27,6 @@ import (
 	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
-// Budget defaults; overridable via Config.
-const (
-	defaultBudgetSoft = 0.85
-	defaultBudgetHard = 0.97
-	defaultKeepTail   = 8
-)
-
 // fallbackCompactDirective is the summarizer system prompt when no
 // program-provided directive is configured. The digest format is
 // program-driven by design (see context-transcript.md §3.5); this is only the
@@ -45,7 +38,7 @@ verbose tool output. Output only the summary, in a compact structured form.`
 
 // recordUsage updates the token ledger from a completed round's final message
 // and checks both budget thresholds. Expects w.mu held.
-func (w *Worker) recordUsage(ctx context.Context, msg llm.Message) {
+func (w *BaseReasonWorker) recordUsage(ctx context.Context, msg llm.Message) {
 	if msg.Usage == nil || w.contextWindow <= 0 {
 		return
 	}
@@ -65,7 +58,7 @@ func (w *Worker) recordUsage(ctx context.Context, msg llm.Message) {
 		w.budgetReminded = true
 		log.Printf("[reason %s] context soft budget %.0f%% (%d/%d tokens) - reminding",
 			w.ID(), ratio*100, w.lastUsageTokens, w.contextWindow)
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
+		w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText,
 				Text: fmt.Sprintf("[system] Context usage is at %d%% of the model window (%d/%d tokens). "+
@@ -79,7 +72,7 @@ func (w *Worker) recordUsage(ctx context.Context, msg llm.Message) {
 
 // compactDirective returns the summarizer system prompt: program/config
 // provided, else the built-in fallback.
-func (w *Worker) compactDirective() string {
+func (w *BaseReasonWorker) compactDirective() string {
 	if w.compactDirectiveOverride != "" {
 		return w.compactDirectiveOverride
 	}
@@ -93,14 +86,14 @@ func (w *Worker) compactDirective() string {
 // runs in update mode: merge new progress into the old summary instead of
 // rebuilding from scratch, so early goals and constraints survive repeated
 // compactions.
-func (w *Worker) compactTranscript(ctx context.Context, directive string, keepTail int) error {
+func (w *BaseReasonWorker) compactTranscript(ctx context.Context, directive string, keepTail int) error {
 	w.mu.Lock()
 	if w.isCompacting {
 		w.mu.Unlock()
 		return fmt.Errorf("compaction already in flight")
 	}
 	w.isCompacting = true
-	msgSnapshot := w.transcript.Render()
+	msgSnapshot := w.Transcript.Render()
 	projection := projectTranscript(msgSnapshot)
 	previousDigest := currentDigest(msgSnapshot)
 	w.mu.Unlock()
@@ -113,7 +106,7 @@ func (w *Worker) compactTranscript(ctx context.Context, directive string, keepTa
 		w.mu.Unlock()
 		return fmt.Errorf("summarize: %w", err)
 	}
-	w.transcript.Compact(digest, keepTail)
+	w.Transcript.Compact(digest, keepTail)
 	w.mu.Unlock()
 
 	log.Printf("[reason %s] transcript compacted (keepTail=%d, digest=%d chars, update=%v)",
@@ -127,12 +120,12 @@ func (w *Worker) compactTranscript(ctx context.Context, directive string, keepTa
 // goals and constraints survive repeated compactions). The digest is
 // whatever the directive-shaped summary produces; the builder treats it as
 // opaque text.
-func (w *Worker) summarize(ctx context.Context, projection, directive, previousDigest string) (string, error) {
+func (w *BaseReasonWorker) summarize(ctx context.Context, projection, directive, previousDigest string) (string, error) {
 	if previousDigest != "" {
 		directive = directive + "\n\nA previous summary exists; update it incrementally: merge new progress " +
 			"into it, move finished items, keep earlier goals and constraints. Previous summary:\n" + previousDigest
 	}
-	resp, err := w.llmProvider.Complete(ctx, &llm.CompletionRequest{
+	resp, err := w.LLMProvider.Complete(ctx, &llm.CompletionRequest{
 		Context: &llm.Context{
 			SystemPrompt: directive,
 			Messages:     []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: projection}}}},

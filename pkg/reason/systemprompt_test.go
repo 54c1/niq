@@ -10,7 +10,7 @@ import (
 // TestBuildInstructionEmpty verifies a worker with no programs still gets a
 // valid system prompt identifying the worker.
 func TestBuildInstructionEmpty(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
+	w := NewBaseReasonWorker(Config{ID: "r1", Bus: newTestChannel()})
 	s := w.buildInstruction()
 	if !strings.Contains(s, "r1") {
 		t.Fatalf("prompt should mention worker ID r1, got: %q", s)
@@ -20,7 +20,7 @@ func TestBuildInstructionEmpty(t *testing.T) {
 // TestBuildInstructionInstruction verifies instruction programs contribute
 // their full content, and locked ones are marked.
 func TestBuildInstructionInstruction(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel(), Programs: []program.Program{
+	w := NewBaseReasonWorker(Config{ID: "r1", Bus: newTestChannel(), Programs: []program.Program{
 		{
 			Meta:         program.Meta{Name: "identity", ContentType: program.ContentTypeInstruction},
 			EntryContent: program.ProgramContent{Content: "You are a code assistant."},
@@ -42,7 +42,7 @@ func TestBuildInstructionInstruction(t *testing.T) {
 // TestBuildInstructionPlaybook verifies playbook programs contribute only
 // metadata (name/description/tags), not full content.
 func TestBuildInstructionPlaybook(t *testing.T) {
-	w := NewWorker(Config{ID: "r1", Bus: newMockChannel(), Programs: []program.Program{
+	w := NewBaseReasonWorker(Config{ID: "r1", Bus: newTestChannel(), Programs: []program.Program{
 		{
 			Meta: program.Meta{Name: "code-review", ContentType: program.ContentTypePlaybook,
 				Description: "Review code", Tags: []string{"go", "review"}},

@@ -19,7 +19,7 @@ func TestSeedMessagesAppliedAtConstruction(t *testing.T) {
 	}}
 	w := NewWorker(Config{ID: "r1", Bus: newMockChannel(), SeedMessages: seed})
 
-	msgs := w.transcript.Render()
+	msgs := w.Transcript.Render()
 	if len(msgs) != 1 {
 		t.Fatalf("seed not applied, got %d messages", len(msgs))
 	}
@@ -28,10 +28,10 @@ func TestSeedMessagesAppliedAtConstruction(t *testing.T) {
 	}
 
 	// Normal Apply continues after the seed.
-	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+	w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "go"}}},
 	}})
-	if got := len(w.transcript.Render()); got != 2 {
+	if got := len(w.Transcript.Render()); got != 2 {
 		t.Fatalf("expected seed + 1, got %d", got)
 	}
 }
@@ -39,7 +39,7 @@ func TestSeedMessagesAppliedAtConstruction(t *testing.T) {
 // TestSeedAbsentForFreshWorker verifies no seed leaves the transcript empty.
 func TestSeedAbsentForFreshWorker(t *testing.T) {
 	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
-	if got := len(w.transcript.Render()); got != 0 {
+	if got := len(w.Transcript.Render()); got != 0 {
 		t.Fatalf("fresh worker should be empty, got %d", got)
 	}
 }

@@ -74,7 +74,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "ok"}}},
 	}
 	for _, m := range seed {
-		w.transcript.Apply(transcript.AssistantOutput{Message: m}) // role preserved verbatim
+		w.Transcript.Apply(transcript.AssistantOutput{Message: m}) // role preserved verbatim
 	}
 
 	blob, err := w.Snapshot()
@@ -91,7 +91,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	gotMsgs, wantMsgs := fresh.transcript.Render(), w.transcript.Render()
+	gotMsgs, wantMsgs := fresh.Transcript.Render(), w.Transcript.Render()
 	if len(gotMsgs) != len(wantMsgs) {
 		t.Fatalf("restored %d messages, want %d", len(gotMsgs), len(wantMsgs))
 	}
@@ -134,7 +134,7 @@ func TestSnapshotEmptyMessages(t *testing.T) {
 	if err := fresh.Restore(blob); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if len(fresh.transcript.Render()) != 0 {
-		t.Fatalf("restored %d messages, want 0", len(fresh.transcript.Render()))
+	if len(fresh.Transcript.Render()) != 0 {
+		t.Fatalf("restored %d messages, want 0", len(fresh.Transcript.Render()))
 	}
 }

@@ -19,29 +19,18 @@ import (
 	"github.com/54c1/niq/core/worker"
 )
 
-func (w *Worker) allTools() []worker.Tool {
-	tools := make([]worker.Tool, 0, len(w.workerTools))
-	for _, t := range w.workerTools {
+func (w *BaseReasonWorker) allTools() []worker.Tool {
+	tools := make([]worker.Tool, 0, len(w.Tools))
+	for _, t := range w.Tools {
 		tools = append(tools, t)
 	}
 	return tools
 }
 
-// EventPublish describes an event type that a worker publishes on the bus.
-// Each worker announces its event types in the worker.ready payload's
-// "publishes" field. The reason worker stores these in w.workerPublishEvents (keyed by
-// worker ID) so the LLM can discover the bus topology via the list_workers
-// tool — knowing which worker emits which events helps the LLM decide where
-// to route messages.
-type EventPublish struct {
-	Type        string `json:"type"`
-	Description string `json:"description"`
-}
-
 // initBuiltinTools adds tools natively handled by this worker (e.g.
-// send_message, list_workers) to w.workerTools with Provider set to w.ID()
+// send_message, list_workers) to w.Tools with Provider set to w.ID()
 // so they route back to self via the bus.
-func (w *Worker) initBuiltinTools() {
+func (w *BaseReasonWorker) initBuiltinTools() {
 	for _, t := range []worker.Tool{
 		{
 			Name:        "send_message",
@@ -87,13 +76,13 @@ func (w *Worker) initBuiltinTools() {
 		},
 	} {
 		t.Provider = w.ID()
-		w.workerTools[t.Name] = t
+		w.Tools[t.Name] = t
 	}
 }
 
 // handleWorkerReady learns a worker's tools and published events from its
 // worker.ready announcement, updating the known tool set and publishes map.
-func (w *Worker) handleWorkerReady(evt event.Event) {
+func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 	workerID, _ := evt.Payload["worker_id"].(string)
 
 	// Parse tools.
@@ -109,7 +98,7 @@ func (w *Worker) handleWorkerReady(evt event.Event) {
 					continue
 				}
 				prefixed := workerID + "." + name
-				w.workerTools[prefixed] = worker.Tool{
+				w.Tools[prefixed] = worker.Tool{
 					Name:        prefixed,
 					Description: desc,
 					Parameters:  params,
@@ -125,27 +114,27 @@ func (w *Worker) handleWorkerReady(evt event.Event) {
 	if err == nil {
 		var eventsRaw []EventPublish
 		if err := json.Unmarshal(b, &eventsRaw); err == nil && len(eventsRaw) > 0 {
-			w.workerPublishEvents[workerID] = eventsRaw
+			w.PublishMap[workerID] = eventsRaw
 			log.Printf("[reason %s] received %d event(s) from %s", w.ID(), len(eventsRaw), workerID)
 		}
 	}
 }
 
 // handleWorkerGone forgets a departed worker's tools and published events.
-func (w *Worker) handleWorkerGone(evt event.Event) {
+func (w *BaseReasonWorker) handleWorkerGone(evt event.Event) {
 	workerID, _ := evt.Payload["worker_id"].(string)
 
-	for name, tool := range w.workerTools {
+	for name, tool := range w.Tools {
 		if tool.Provider == workerID {
-			delete(w.workerTools, name)
+			delete(w.Tools, name)
 		}
 	}
-	delete(w.workerPublishEvents, workerID)
+	delete(w.PublishMap, workerID)
 	log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 }
 
 // handleToolRequest processes tool.requested events targeting this worker.
-func (w *Worker) handleToolRequest(evt event.Event) {
+func (w *BaseReasonWorker) handleToolRequest(evt event.Event) {
 	callID, _ := evt.Payload["call_id"].(string)
 	toolName, _ := evt.Payload["name"].(string)
 	callerID := evt.WorkerId
@@ -170,7 +159,7 @@ func (w *Worker) handleToolRequest(evt event.Event) {
 	}
 }
 
-func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[string]any) {
+func (w *BaseReasonWorker) handleSendMessage(callID, toolName, callerID string, args map[string]any) {
 	target, _ := args["target"].(string)
 	text, _ := args["text"].(string)
 	if target == "" || text == "" {
@@ -200,7 +189,7 @@ func (w *Worker) handleSendMessage(callID, toolName, callerID string, args map[s
 // keeps the configured tail.
 // events, grouped by provider. It also triggers a worker.discover to refresh
 // the cache for the next call.
-func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[string]any) {
+func (w *BaseReasonWorker) handleListWorkers(callID, toolName, callerID string, args map[string]any) {
 	// Trigger re-discovery so the next call gets fresh data.
 	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerDiscover, w.ID(), nil))
 
@@ -214,12 +203,12 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 	providers := make(map[string]*workerInfo)
 
 	// Collect tools grouped by provider.
-	for _, tool := range w.workerTools {
+	for _, tool := range w.Tools {
 		info, ok := providers[tool.Provider]
 		if !ok {
 			info = &workerInfo{
 				WorkerID:  tool.Provider,
-				Publishes: w.workerPublishEvents[tool.Provider],
+				Publishes: w.PublishMap[tool.Provider],
 			}
 			providers[tool.Provider] = info
 		}
@@ -227,7 +216,7 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 	}
 
 	// Collect providers that only publish events (no tools).
-	for provider, events := range w.workerPublishEvents {
+	for provider, events := range w.PublishMap {
 		if _, ok := providers[provider]; !ok {
 			providers[provider] = &workerInfo{
 				WorkerID:  provider,
@@ -251,7 +240,7 @@ func (w *Worker) handleListWorkers(callID, toolName, callerID string, args map[s
 	log.Printf("[reason %s] list_workers → %d workers", w.ID(), len(result))
 }
 
-func (w *Worker) sendSuccess(callID, toolName, callerID, result string) {
+func (w *BaseReasonWorker) sendSuccess(callID, toolName, callerID, result string) {
 	evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 		"call_id": callID, "name": toolName,
 		"result": result,
@@ -260,7 +249,7 @@ func (w *Worker) sendSuccess(callID, toolName, callerID, result string) {
 	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
-func (w *Worker) sendFail(callID, toolName, callerID, errMsg string) {
+func (w *BaseReasonWorker) sendFail(callID, toolName, callerID, errMsg string) {
 	evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 		"call_id": callID, "name": toolName,
 		"error": errMsg,
@@ -272,7 +261,7 @@ func (w *Worker) sendFail(callID, toolName, callerID, errMsg string) {
 // handleCompactTool serves compress / context.close_episode (see comment
 // above the tool registrations). Runs the compaction loop on its own
 // goroutine and replies to the caller via the bus when done.
-func (w *Worker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
+func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
 	// Capture the trace under the caller's lock; the goroutine runs unlocked.
 	traceID := w.currentTraceID
 
@@ -316,7 +305,7 @@ func compactResultText(kind string, err error) string {
 
 // toolDefs builds the LLM tool definitions from the known tools, rebuilding the
 // sanitized-name mapping (dot → underscore) so tool calls can be desanitized.
-func toolDefs(w *Worker, tools []worker.Tool) []llm.ToolDef {
+func toolDefs(w *BaseReasonWorker, tools []worker.Tool) []llm.ToolDef {
 	// Rebuild the sanitized-name mapping.
 	w.toolNameMap = make(map[string]string, len(tools))
 
@@ -337,7 +326,7 @@ func sanitizeToolName(name string) string {
 	return strings.ReplaceAll(name, ".", "_")
 }
 
-func desanitizeToolName(w *Worker, sane string) string {
+func desanitizeToolName(w *BaseReasonWorker, sane string) string {
 	if orig, ok := w.toolNameMap[sane]; ok {
 		return orig
 	}
@@ -347,7 +336,7 @@ func desanitizeToolName(w *Worker, sane string) string {
 // sendToolRequests sends a directed tool.requested event for each tool call
 // to its target worker. The tracker only manages the pending map; the caller
 // is responsible for delivering the requests to the bus.
-func (w *Worker) sendToolRequests(target, callerID string, calls []llm.ContentBlock, traceID string) {
+func (w *BaseReasonWorker) sendToolRequests(target, callerID string, calls []llm.ContentBlock, traceID string) {
 	for _, tc := range calls {
 		var argsMap map[string]any
 		if tc.ToolArguments != "" {

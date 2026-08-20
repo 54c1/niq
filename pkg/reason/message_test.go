@@ -107,7 +107,7 @@ func TestEventPatternSourceFilter(t *testing.T) {
 		converted = true
 		return []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "marker"}}}}
 	}
-	w := &Worker{
+	w := &BaseReasonWorker{
 		eventConverters: []EventConverter{
 			{Pattern: event.EventPattern{Type: "pr.ready", SourceID: "gh"}, Converter: marker},
 		},
