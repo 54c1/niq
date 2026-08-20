@@ -1,9 +1,9 @@
 // Package reason provides the domain-agnostic reasoning core shared by
 // reason-family workers: the reasoning round (an LLM call + lifecycle
 // broadcasts), budget handling, tool-call tracking, tool dispatch and system
-// prompt construction. A reason-family worker (the generic reason worker, a
-// future coding worker, ...) embeds BaseReasonWorker and layers on its own
-// subscriptions, tool discovery, built-in tools and event conversion.
+// prompt construction. A reason-family worker embeds BaseReasonWorker and
+// layers on its own subscriptions, tool discovery, built-in tools and event
+// conversion.
 //
 // BaseReasonWorker embeds worker.BaseWorker, so it is a bus worker: it has an
 // id, subscriptions and a channel, and can broadcast/send events. What it
