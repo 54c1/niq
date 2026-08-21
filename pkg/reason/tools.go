@@ -187,10 +187,34 @@ func (w *BaseReasonWorker) handleWorkerGone(evt event.Event) {
 	log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 }
 
-// encodeTimerTimeout is the encoded name of the timer worker's
-// set_tool_timeout tool (provider "timer"), which the reason loop treats
-// specially as the current round's timeout timer.
-const encodeTimerTimeout = "timer__set_tool_timeout"
+// setToolTimeoutTool is the bare-name contract for the tool built-in timeout:
+// if any worker provides a tool whose bare name is "set_tool_timeout", the
+// reason worker treats it as this round's tool-call timeout. Provider-agnostic
+// — the timer worker need not be named "timer". If no worker provides it, the
+// timeout feature is simply disabled.
+const setToolTimeoutTool = "set_tool_timeout"
+
+// timeoutToolFor returns the tool backing a name if it is the timeout tool.
+func (w *BaseReasonWorker) timeoutToolFor(name string) (worker.Tool, bool) {
+	t, ok := w.tools[name]
+	if !ok {
+		return worker.Tool{}, false
+	}
+	if t.Name == name && bareToolName(t) == setToolTimeoutTool {
+		return t, true
+	}
+	return worker.Tool{}, false
+}
+
+// bareToolName reverses tool encoding to the bare name. For an external tool
+// (provider__name) it strips the prefix; built-ins (no provider prefix) return
+// name unchanged.
+func bareToolName(t worker.Tool) string {
+	if t.Provider == "" {
+		return t.Name
+	}
+	return strings.TrimPrefix(t.Name, t.Provider+"__")
+}
 
 // handleToolRequest processes a tool.requested event targeting this worker by
 // dispatching to its tool provider.

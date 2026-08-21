@@ -233,6 +233,7 @@ type BaseReasonWorker struct {
 	needReason              bool
 	isReasoning             bool
 	activeTimeout           string       // current round's set_tool_timeout call_id, "" if none
+	activeTimeoutProvider   string       // worker that set the active timeout (set time), "" if none
 	interruptReason         PreemptCause // why the current reasoning round was interrupted
 	immediateReasoningCause PreemptCause // why the next reasoning round was triggered
 	currentTraceID          string

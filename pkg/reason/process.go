@@ -258,28 +258,27 @@ func (w *BaseReasonWorker) parkPending(cause PreemptCause) []*ToolCall {
 	return tcs
 }
 
-// cancelTimeout cancels the current round's active timeout timer by
-// sending a tool.cancel event to the timer worker. Called when all tools have resolved
-// — the timeout is no longer needed.
+// cancelTimeout cancels the current round's active timeout timer by sending a
+// tool.cancel event to the worker that set it. Called when all tools have
+// resolved — the timeout is no longer needed.
 func (w *BaseReasonWorker) cancelTimeout() {
 	if w.activeTimeout == "" {
 		return
 	}
-	// Look up the timer worker ID from the set_tool_timeout tool definition.
-	targetID := ""
-	if t, ok := w.tools[encodeTimerTimeout]; ok {
-		targetID = t.Provider
+	// Cancel goes to the worker that set the active timeout (captured at set
+	// time) — not re-looked-up, so it is correct even with multiple providers.
+	if w.activeTimeoutProvider == "" {
+		return
 	}
-
-	// Send cancel event
 	timerID := w.activeTimeout
 	evt := event.New(event.TypeToolCancel, w.ID(), map[string]any{
 		"call_id":  timerID + "-cancel",
 		"timer_id": timerID,
 	})
-	_ = w.Channel.Send(context.Background(), evt, targetID)
+	_ = w.Channel.Send(context.Background(), evt, w.activeTimeoutProvider)
 
 	w.activeTimeout = ""
+	w.activeTimeoutProvider = ""
 }
 
 // ── event → transcript input translation ──

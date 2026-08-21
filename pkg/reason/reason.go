@@ -65,6 +65,7 @@ func (w *BaseReasonWorker) prepareReasoning() (traceID string, req *llm.Completi
 	w.mu.Lock()
 	w.isReasoning = true
 	w.activeTimeout = "" // each reasoning starts with no active timeout timer
+	w.activeTimeoutProvider = ""
 
 	// Park any pending tools from the previous reasoning before taking the
 	// snapshot, so the LLM sees the parked context. The cause is taken
@@ -363,15 +364,14 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 	busCalls := toolCalls
 
 	// Record the current round's single timeout timer, if any. At most one
-	// is meaningful — the first timer to fire parks all pending tools. Only
-	// record if the tool exists in w.tools — if the providing worker hasn't
-	// announced yet or was removed, skip so cancelTimeout/handleTimeout
-	// are naturally disabled.
+	// is meaningful — the first timer to fire parks all pending tools; a
+	// second set_tool_timeout in the same round is treated as a misplaced
+	// config and overwrites the first (leak accepted). Only record if a
+	// provider actually offers the timeout tool.
 	for _, tc := range busCalls {
-		if tc.ToolName == encodeTimerTimeout {
-			if _, ok := w.tools[tc.ToolName]; ok {
-				w.activeTimeout = tc.ToolCallID
-			}
+		if t, ok := w.timeoutToolFor(tc.ToolName); ok {
+			w.activeTimeout = tc.ToolCallID
+			w.activeTimeoutProvider = t.Provider
 		}
 	}
 
