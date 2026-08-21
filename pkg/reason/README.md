@@ -38,7 +38,7 @@ Division between watch and process:
 | `watch.go` | the event loop `watch` + the `tryReason` decision gate |
 | `process.go` | event dispatch `process` + handlers (abort/timeout/reminder/tool-result/input) + event→transcript-input translation |
 | `tools.go` | tools: the `ToolProvider` interface + default `BuiltinTools` + tool-name encoding + worker.ready tool discovery |
-| `budget.go` | context budget: token ledger (Usage snapshot), soft/hard thresholds (remind/direct compact), compaction orchestration (project→summarize→apply), incremental merge, projection (strips image/thinking, truncates) |
+| `compact.go` | context budget + transcript compaction: token ledger (Usage snapshot), soft/hard thresholds (remind/direct compact), compaction orchestration (project→summarize→apply), incremental merge, projection (strips image/thinking, truncates) |
 | `systemprompt.go` | renders the system prompt from programs |
 | `tooltracker.go` | `ToolCallTracker` state machine (tracks Pending/Parked), map only |
 | `transcript/` | the transcript subpackage: `Transcript` interface + sealed input variants + the tool-pairing invariant base + the default accumulate implementation |

@@ -1,8 +1,9 @@
-// Context budget: token ledger, threshold detection, and the compaction loop.
+// Context budget and transcript compaction.
 //
-// The ledger records the latest round-trip usage (InputTokens + OutputTokens
-// snapshot, never accumulated) from EventDone.Message.Usage. Against the
-// model's ContextWindow it yields an occupancy ratio with two exits:
+// This is the transcript's rolling-pressure mechanism. A token ledger records
+// the latest round-trip usage (InputTokens + OutputTokens snapshot, never
+// accumulated) from EventDone.Message.Usage; against the model's ContextWindow
+// it yields an occupancy ratio with two exits:
 //
 //	>= budget_soft -> guided: inject a reminder, the LLM calls the
 //	   context.compress tool
@@ -30,8 +31,7 @@ import (
 
 // fallbackCompactDirective is the summarizer system prompt when no
 // program-provided directive is configured. The digest format is
-// program-driven by design (see context-transcript.md §3.5); this is only the
-// built-in fallback template.
+// program-driven by design; this is only the built-in fallback template.
 const fallbackCompactDirective = `Summarize the following reasoning transcript for continuation.
 Preserve: the task/goal, decisions made and their reasons, established facts (paths, ids, versions, errors),
 open TODOs, and the latest state. Drop: process detail, failed exploration steps (keep one-line lessons),
@@ -165,8 +165,8 @@ func currentDigest(msgs []llm.Message) string {
 
 // projectTranscript renders a lossy-but-faithful projection of the transcript
 // for summarization: images and thinking stripped, tool results truncated,
-// one line per message. Keep in sync with the projection rules in
-// context-transcript.md §5.3.
+//
+//	one line per message.
 func projectTranscript(msgs []llm.Message) string {
 	const maxToolResult = 2000
 

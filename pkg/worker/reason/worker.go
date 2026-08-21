@@ -22,7 +22,7 @@ type Config struct {
 	// default accumulate implementation.
 	Transcript transcript.Transcript
 
-	// Context budget (see pkg/reason/budget.go). ContextWindow is the model's
+	// Context budget (see pkg/reason/compact.go). ContextWindow is the model's
 	// window in tokens; 0 disables budget handling. BudgetSoft/BudgetHard are
 	// occupancy ratios; KeepTail is how many recent messages compaction
 	// preserves; CompactDirective overrides the fallback summarizer prompt.
