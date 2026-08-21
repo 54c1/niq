@@ -65,10 +65,10 @@ type Config struct {
 	Provider        llm.LLMProvider
 	ReasoningEffort *string
 
-	// BuiltinTools is the tool provider for this worker. nil uses the default
-	// BuiltinTools (send_message, list_workers, context.compress,
-	// context.rotate). To customize, supply a provider that lists every tool
-	// you want — including the defaults if you want to keep them.
+	// BuiltinTools serves the tools this worker both calls and answers itself
+	// (a tool call routed back to the same worker). nil uses the default set;
+	// a custom provider lists every tool to serve, defaults included. Tools
+	// served by other workers are discovered separately.
 	BuiltinTools ToolProvider
 
 	ContextWindow    int
