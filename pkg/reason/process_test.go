@@ -7,6 +7,9 @@ import (
 	"github.com/54c1/niq/core/llm"
 )
 
+// Tests for process.go's event-to-input translation: DefaultConverter,
+// resultOutcome, and convertEvent's source-filtered converter selection.
+// (EventPattern.Matches semantics are tested in core/event.)
 // TestDefaultConverterText verifies a payload with a "text" field produces a
 // user message leading with that text.
 func TestDefaultConverterText(t *testing.T) {
@@ -67,37 +70,7 @@ func TestResultOutcome(t *testing.T) {
 }
 
 // Placeholder-family behavior (resultMessage/parkReason/unavailable/
-// late-result, previously tested here) now lives in the builder package:
-// see builder/builder_test.go.
-
-// TestEventPatternMatches verifies the subscription matching semantics,
-// including type wildcards and optional source filtering.
-func TestEventPatternMatches(t *testing.T) {
-	cases := []struct {
-		name    string
-		pattern event.EventPattern
-		typ     string
-		source  string
-		want    bool
-	}{
-		{"wildcard", event.NewPattern("*"), "anything", "", true},
-		{"exact", event.NewPattern("tool.completed"), "tool.completed", "", true},
-		{"exact-miss", event.NewPattern("tool.completed"), "tool.failed", "", false},
-		{"prefix", event.NewPattern("github.*"), "github.issue.new", "", true},
-		{"prefix-bare", event.NewPattern("github.*"), "github", "", true},
-		{"prefix-miss", event.NewPattern("github.*"), "gitlab.issue", "", false},
-		{"empty-miss", event.EventPattern{}, "anything", "", false}, // empty pattern matches nothing
-		{"source-match", event.EventPattern{Type: "pr.ready", SourceID: "gh"}, "pr.ready", "gh", true},
-		{"source-miss", event.EventPattern{Type: "pr.ready", SourceID: "gh"}, "pr.ready", "gitlab", false},
-		{"source-wildcard", event.EventPattern{Type: "*", SourceID: "gh"}, "pr.ready", "gh", true},
-	}
-	for _, c := range cases {
-		evt := event.Event{Type: event.EventType(c.typ), WorkerId: c.source}
-		if got := c.pattern.Matches(evt); got != c.want {
-			t.Errorf("%s: Match() = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
+// late-result, previously tested here) now lives in the builder package.
 
 // TestEventPatternSourceFilter verifies source-filtered matching end to end
 // through convertEvent.
