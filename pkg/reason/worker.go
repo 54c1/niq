@@ -1,14 +1,21 @@
-// Package reason provides the domain-agnostic reasoning core shared by
-// reason-family workers: the reasoning round (an LLM call + lifecycle
-// broadcasts), budget handling, tool-call tracking, tool dispatch and system
-// prompt construction. A reason-family worker embeds BaseReasonWorker and
-// layers on its own subscriptions, tool discovery, built-in tools and event
-// conversion.
+// Package reason provides the reasoning mechanism shared by reason-family
+// workers. It is the machinery a reasoning node needs in one piece: the
+// reasoning round (an LLM call + lifecycle broadcasts), the transcript, budget
+// and compaction, tool-call tracking and dispatch, and system-prompt
+// construction.
 //
-// BaseReasonWorker embeds worker.BaseWorker, so it is a bus worker: it has an
-// id, subscriptions and a channel, and can broadcast/send events. What it
-// does NOT decide is *which* events to subscribe to or *which* tools to expose
-// as built-ins — each embedding worker does.
+// This package deliberately contains no notion of *what* the worker is
+// attending to. The split is:
+//   - mechanism (here): how a reasoning node reasons — invokes the LLM, manages
+//     its working notes, shrinks them against the finite window, dispatches
+//     tools, renders its system prompt. Any reasoning node needs these, no
+//     matter what it is pointed at.
+//   - attention (the embedding worker): what the node subscribes to, what its
+//     built-in tools are, what its event converters produce, what its programs
+//     tell it to preserve when compacting. These reflect a specific goal.
+//
+// An embedding worker composes one goal-specific attention onto this shared
+// mechanism.
 package reason
 
 import (
@@ -25,8 +32,8 @@ import (
 )
 
 // EventConverter pairs an event pattern with a conversion function that
-// transforms matching events into LLM messages. Domain-agnostic: reason-family
-// workers supply their own converters.
+// transforms matching events into LLM messages. The embedding worker supplies
+// its own converters (which events become which input to the model).
 type EventConverter struct {
 	Pattern   event.EventPattern
 	Converter func(evt event.Event) []llm.Message
@@ -44,9 +51,9 @@ const (
 	DefaultKeepTail   = 8
 )
 
-// Config holds the domain-agnostic inputs to BaseReasonWorker: the pieces every
-// reason-family worker needs. Embedding workers (e.g. pkg/worker/reason)
-// assemble a Config and call NewBaseReasonWorker.
+// Config holds the inputs to BaseReasonWorker — the pieces a reasoning node
+// needs. The embedding worker assembles a Config (its goals, programs,
+// converters, transcript) and calls NewBaseReasonWorker.
 type Config struct {
 	ID              string
 	Bus             corebus.WorkerSideChannel
@@ -67,9 +74,9 @@ type Config struct {
 	SeedMessages []llm.Message
 }
 
-// NewBaseReasonWorker assembles a BaseReasonWorker from a domain-agnostic
-// Config: applies budget defaults, initializes the empty tool table / publish
-// map / tool-call tracker, and seeds the transcript with any handover brief.
+// NewBaseReasonWorker assembles a BaseReasonWorker from a Config: applies
+// budget defaults, initializes the empty tool table / publish map / tool-call
+// tracker, and seeds the transcript with any handover brief.
 func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 	if cfg.Transcript == nil {
 		cfg.Transcript = transcript.NewAccumulateTranscript()
@@ -109,9 +116,9 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		w.Transcript.Apply(transcript.InputEvent{Messages: cfg.SeedMessages})
 	}
 
-	// Install the domain-agnostic built-in tools (send_message, list_workers,
-	// compress, context.close_episode). Reason-family workers can add their own
-	// via w.Tools before Start.
+	// Install the built-in tools (send_message, list_workers, compress,
+	// context.close_episode). An embedding worker can add its own to
+	// w.Tools before Start.
 	w.initBuiltinTools()
 
 	return w
@@ -172,8 +179,10 @@ func (w *BaseReasonWorker) Restore(state []byte) error {
 	return w.Transcript.Restore(state)
 }
 
-// BaseReasonWorker is the domain-agnostic reasoning core shared by all
-// reason-family workers. It embeds worker.BaseWorker (id/subs/channel).
+// BaseReasonWorker is the reasoning mechanism shared by all reason-family
+// workers: it embeds worker.BaseWorker (id/subs/channel) and owns the working
+// notes, the LLM call, budget, tool table and the run flags of one reasoning
+// round. It knows how to reason, not what to attend to.
 type BaseReasonWorker struct {
 	worker.BaseWorker
 	mu sync.Mutex

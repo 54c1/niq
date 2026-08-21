@@ -38,10 +38,10 @@ type Config struct {
 	SeedMessages []llm.Message
 }
 
-// Worker is the generic reason-family worker: it embeds the domain-agnostic
-// BaseReasonWorker (the reasoning round, budget, tool dispatch, system prompt,
-// lifecycle) and is registered as a "reason" worker, layering on the built-in
-// subscriptions and converters.
+// Worker is the generic reason-family worker: it embeds the shared reasoning
+// mechanism BaseReasonWorker (the reasoning round, budget, tool dispatch,
+// system prompt, lifecycle) and is registered as a "reason" worker, layering
+// on the built-in subscriptions and converters.
 //
 // Start/Stop/Snapshot/Restore and the whole reasoning behavior are inherited
 // from BaseReasonWorker; this worker only assembles a Worker from Config.

@@ -17,10 +17,10 @@ import "github.com/54c1/niq/core/llm"
 //     invariants (tool_call/tool_result pairing), nothing more.
 //   - Inputs are sealed, data-only variants: the worker translates its
 //     lifecycle into these variants.
-//   - Render is an identity projection of the state: [system] is the worker's
-//     domain (programs), the transcript renders messages verbatim. Prefix
-//     stability (prompt cache) holds because messages only append, and digest
-//     changes happen only via Compact.
+//   - Render is an identity projection of the state: the system prompt comes
+//     from the worker's programs (not here); the transcript renders only
+//     messages, verbatim. Prefix stability (prompt cache) holds because
+//     messages only append, and digest changes happen only via Compact.
 //
 // The interface is evolving: a single implementation (Accumulate) for now.
 type Transcript interface {
