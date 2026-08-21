@@ -112,7 +112,10 @@ func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.Comple
 			// Over the hard limit the provider rejected the request: compact
 			// synchronously (our own lock discipline), then retry with the
 			// shrunk context.
-			if cerr := w.compactTranscript(reasonCtx, w.compactDirective(), w.keepTail); cerr == nil {
+			w.mu.Lock()
+			cerr := w.compactor.Compact(reasonCtx, w.transcript, w.compactDirective())
+			w.mu.Unlock()
+			if cerr == nil {
 				req.Context.Messages = w.renderTranscriptLocked()
 				// Return the original error so retry keeps looping (retry
 				// treats a nil error as success); the next attempt uses the

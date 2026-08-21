@@ -164,32 +164,6 @@ func TestCompactToolRotates(t *testing.T) {
 	}
 }
 
-// TestCompactionSingleFlight verifies a second compaction while one is in
-// flight fails fast instead of double-applying.
-func TestCompactionSingleFlight(t *testing.T) {
-	prov := &summarizeProvider{summarized: "single",
-		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
-	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
-		ContextWindow: 1000})
-
-	for i := 0; i < 4; i++ {
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "x"}}},
-		}})
-	}
-
-	// First in flight (isCompacting true): second call must fail.
-	w.mu.Lock()
-	w.isCompacting = true
-	w.mu.Unlock()
-	if err := w.compactTranscript(context.Background(), w.compactDirective(), 1); err == nil {
-		t.Fatal("expected single-flight rejection")
-	}
-	w.mu.Lock()
-	w.isCompacting = false
-	w.mu.Unlock()
-}
-
 // TestProjectTranscriptStrips verifies the projection drops thinking blocks
 // and truncates oversized tool results.
 func TestProjectTranscriptStrips(t *testing.T) {
@@ -226,7 +200,7 @@ func TestCompactionUpdateMode(t *testing.T) {
 	prov := &summarizeProvider{summarized: "v2",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
 	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
-		ContextWindow: 1000})
+		ContextWindow: 1000, KeepTail: 1})
 
 	// Seed a transcript already headed by a digest (previous compaction).
 	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
@@ -239,7 +213,10 @@ func TestCompactionUpdateMode(t *testing.T) {
 		}})
 	}
 
-	if err := w.compactTranscript(context.Background(), w.compactDirective(), 1); err != nil {
+	w.mu.Lock()
+	err := w.compactor.Compact(context.Background(), w.transcript, w.compactDirective())
+	w.mu.Unlock()
+	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 

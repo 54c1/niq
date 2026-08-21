@@ -71,6 +71,11 @@ type Config struct {
 	// served by other workers are discovered separately.
 	BuiltinTools ToolProvider
 
+	// Compactor is how this worker compresses its transcript under window
+	// pressure. nil uses the default LLM-summary compactor. It may also carry
+	// extra operations (e.g. Rotate) reached by the tools that declare them.
+	Compactor Compactor
+
 	ContextWindow    int
 	BudgetSoft       float64
 	BudgetHard       float64
@@ -127,6 +132,14 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		w.toolProvider = NewBuiltinTools(w)
 	} else {
 		w.toolProvider = cfg.BuiltinTools
+	}
+
+	// Compactor: default LLM-summary compactor unless supplied. It needs the
+	// provider for summarization and the tail policy.
+	if cfg.Compactor == nil {
+		w.compactor = NewDefaultCompactor(cfg.Provider, cfg.KeepTail)
+	} else {
+		w.compactor = cfg.Compactor
 	}
 
 	// Install the provider's tools into w.tools (see initBuiltinTools in
@@ -225,6 +238,7 @@ type BaseReasonWorker struct {
 	toolCallTracker *ToolCallTracker
 
 	toolProvider    ToolProvider
+	compactor       Compactor
 	eventConverters []EventConverter
 
 	reasoningEffort *string
@@ -249,5 +263,4 @@ type BaseReasonWorker struct {
 	compactDirectiveOverride string
 	lastUsageTokens          int
 	budgetReminded           bool
-	isCompacting             bool
 }

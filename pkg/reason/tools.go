@@ -326,11 +326,10 @@ func (w *BaseReasonWorker) sendFail(callID, toolName, callerID, errMsg string) {
 }
 
 // handleCompactTool serves compress / context.rotate: both run the
-// compaction asynchronously (the summary is an LLM call) on their own goroutine
-// and reply via the bus when done. rotate turns the page (keepTail=2: keeps
-// this call's assistant tool_call + [pending] placeholder so the result stays
-// visible to the model and the pairing invariant holds); compress keeps the
-// configured tail.
+// compaction asynchronously on their own goroutine and reply via the bus when
+// done. compress delegates to the Compactor's Compact; rotate, being a
+// DefaultCompactor extension, is reached by type assertion (this worker
+// declares the rotate tool, so its compactor must provide it).
 func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
 	// Capture the trace under the caller's lock; the goroutine runs unlocked.
 	traceID := w.currentTraceID
@@ -344,15 +343,19 @@ func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, 
 			directive = directive + "\nCarry into the new episode: " + carry
 		}
 
-		keepTail := w.keepTail
-		if kind == "rotate" {
-			// Keep the closing tool call's assistant message + its [pending]
-			// placeholder so the result stays visible to the model after
-			// replacement (and the pairing invariant holds).
-			keepTail = 2
+		var err error
+		w.mu.Lock()
+		switch kind {
+		case "rotate":
+			if c, ok := w.compactor.(*DefaultCompactor); ok {
+				err = c.Rotate(context.Background(), w.transcript, directive)
+			} else {
+				err = fmt.Errorf("context.rotate tool declared but compactor has no Rotate")
+			}
+		default:
+			err = w.compactor.Compact(context.Background(), w.transcript, directive)
 		}
-
-		err := w.compactTranscript(context.Background(), directive, keepTail)
+		w.mu.Unlock()
 
 		evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
 			"call_id": callID, "name": toolName,
