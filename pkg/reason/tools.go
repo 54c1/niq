@@ -265,7 +265,10 @@ func (w *BaseReasonWorker) handleListWorkers(callID, toolName, callerID string, 
 
 	b, err := json.Marshal(result)
 	if err != nil {
-		w.sendFail(callID, toolName, callerID, fmt.Sprintf("marshal error: %v", err))
+		w.sendFail(callID, toolName, callerID, fmt.Sprintf(
+			"list_workers could not serialize the worker list: a worker's announced tool/event carried "+
+				"a field that cannot be serialized (%v). This usually means a worker.ready declared an invalid "+
+				"schema. Ask that worker to fix its declaration, then retry.", err))
 		return
 	}
 
