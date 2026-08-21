@@ -170,13 +170,12 @@ func TestCompactAlignsCutToPairing(t *testing.T) {
 	if got[0].Role != llm.RoleUser || !strings.Contains(got[0].Content[0].Text, "digest") {
 		t.Fatalf("digest head missing: %+v", got[0])
 	}
-	for _, m := range got[1:] {
-		if m.Role == llm.RoleToolResult {
-			t.Fatalf("tail must not start with orphan tool_result: %+v", got)
-		}
-		break
+	// The tail must not open with an orphan tool_result (pairing invariant).
+	if len(got) > 1 && got[1].Role == llm.RoleToolResult {
+		t.Fatalf("tail must not start with orphan tool_result: %+v", got)
 	}
-	if got[len(got)-1].Content[0].Text != "after" {
+	last := got[len(got)-1]
+	if last.Content[0].Text != "after" {
 		t.Fatalf("recent messages must be preserved: %+v", got)
 	}
 }
