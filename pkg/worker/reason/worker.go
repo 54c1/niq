@@ -32,6 +32,16 @@ type Config struct {
 	KeepTail         int
 	CompactDirective string
 
+	// Compactor is how this worker compresses its transcript under window
+	// pressure. nil uses the default LLM-summary compactor.
+	Compactor reasonBase.Compactor
+
+	// BuiltinTools serves the tools this worker both calls and answers itself.
+	// nil uses the default set (send_message, list_workers, context.compress,
+	// context.rotate). To customize, supply a provider listing every tool you
+	// want, defaults included.
+	BuiltinTools reasonBase.ToolProvider
+
 	// SeedMessages are applied to the transcript at construction: the
 	// spawner's handover brief (goal goes to Programs instead). nil for a
 	// fresh worker.
@@ -91,6 +101,8 @@ func NewWorker(cfg Config) *Worker {
 		BudgetHard:       cfg.BudgetHard,
 		KeepTail:         cfg.KeepTail,
 		CompactDirective: cfg.CompactDirective,
+		Compactor:        cfg.Compactor,
+		BuiltinTools:     cfg.BuiltinTools,
 		SeedMessages:     cfg.SeedMessages,
 	})
 
