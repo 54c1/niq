@@ -201,7 +201,7 @@ func (w *BaseReasonWorker) consumeStream(reasonCtx context.Context, stream *llm.
 			stream.Drain(drainCtx)
 			drainCancel()
 			flushBatches()
-			// Preserve partial content to conversation context.
+			// Preserve partial content to the working context.
 			if partialThinking != "" || partialText != "" {
 				var blocks []llm.ContentBlock
 				if partialThinking != "" {

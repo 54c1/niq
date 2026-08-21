@@ -65,7 +65,7 @@ func (w *BaseReasonWorker) process(_ context.Context, evt event.Event) {
 
 // handleAbort cancels the current LLM call, parks all pending tools (so late
 // results can still be contextualized), best-effort recalls them, and records
-// the abort in the conversation transcript. needReason is cleared so no new
+// the abort in the transcript. needReason is cleared so no new
 // reasoning round starts until the next worker.input.
 func (w *BaseReasonWorker) handleAbort(_ event.Event) {
 	w.interruptReason = PreemptCauseAbort
@@ -87,7 +87,7 @@ func (w *BaseReasonWorker) handleAbort(_ event.Event) {
 	tcs := w.parkPending(PreemptCauseAbort)
 	w.recallToolCalls(tcs)
 
-	// Record the abort in the conversation transcript so the LLM
+	// Record the abort in the working transcript so the LLM
 	// knows what happened when the next round starts.
 	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
 		Role: llm.RoleUser,

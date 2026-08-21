@@ -70,7 +70,7 @@ var builtinDefinitions = []worker.Tool{
 	},
 	{
 		Name:        "context.compress",
-		Description: "Compact your own conversation history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
+		Description: "Compact your own context history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
