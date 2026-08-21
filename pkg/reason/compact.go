@@ -22,9 +22,10 @@ import (
 	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
-// recordUsage updates the token ledger from a completed round's final message
-// and checks both budget thresholds. Expects w.mu held.
-func (w *BaseReasonWorker) recordUsage(ctx context.Context, msg llm.Message) {
+// handleBudget updates the token ledger from a completed round's final message
+// and acts on the budget thresholds: reminder (soft) or direct compaction
+// (hard). Expects w.mu held.
+func (w *BaseReasonWorker) handleBudget(ctx context.Context, msg llm.Message) {
 	if msg.Usage == nil || w.contextWindow <= 0 {
 		return
 	}

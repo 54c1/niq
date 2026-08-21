@@ -336,7 +336,7 @@ func (w *BaseReasonWorker) finishReasoning(ctx context.Context, traceID string, 
 
 	// Budget check: record the round's usage and act on thresholds
 	// (soft: remind, hard: schedule compaction). Expects w.mu held.
-	w.recordUsage(ctx, finalMsg)
+	w.handleBudget(ctx, finalMsg)
 
 	// Collect tool calls and thinking blocks from the response.
 	var toolCalls []llm.ContentBlock

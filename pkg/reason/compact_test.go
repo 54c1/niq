@@ -56,7 +56,7 @@ func TestSoftBudgetInjectsReminder(t *testing.T) {
 	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
 		ContextWindow: 1000, BudgetSoft: 0.85, BudgetHard: 0.97})
 
-	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 900, OutputTokens: 10}})
+	w.handleBudget(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 900, OutputTokens: 10}})
 
 	msgs := w.transcript.Render()
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Content[0].Text, "91%") {
@@ -64,7 +64,7 @@ func TestSoftBudgetInjectsReminder(t *testing.T) {
 	}
 
 	// Same side of the threshold: no duplicate reminder.
-	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 950, OutputTokens: 5}})
+	w.handleBudget(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 950, OutputTokens: 5}})
 	if got := len(w.transcript.Render()); got != 1 {
 		t.Fatalf("reminder should fire once per crossing, got %d messages", got)
 	}
@@ -87,7 +87,7 @@ func TestHardBudgetCompacts(t *testing.T) {
 	}
 	seed(6)
 
-	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 990, OutputTokens: 5}})
+	w.handleBudget(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 990, OutputTokens: 5}})
 
 	// Poll under the worker lock: Render() is only safe with w.mu held
 	// (builders are passive; the caller serializes access).
