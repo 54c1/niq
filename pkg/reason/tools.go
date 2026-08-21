@@ -53,7 +53,7 @@ func (w *BaseReasonWorker) initBuiltinTools() {
 			},
 		},
 		{
-			Name:        "compress",
+			Name:        "context.compress",
 			Description: "Compact your own conversation history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -146,7 +146,7 @@ func (w *BaseReasonWorker) handleToolRequest(evt event.Event) {
 		w.handleSendMessage(callID, toolName, callerID, args)
 	case "list_workers":
 		w.handleListWorkers(callID, toolName, callerID, args)
-	case "compress":
+	case "context.compress":
 		w.handleCompactTool(callID, toolName, callerID, args, "compress")
 	case "context.close_episode":
 		w.handleCompactTool(callID, toolName, callerID, args, "close_episode")

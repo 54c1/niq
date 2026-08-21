@@ -4,7 +4,8 @@
 // snapshot, never accumulated) from EventDone.Message.Usage. Against the
 // model's ContextWindow it yields an occupancy ratio with two exits:
 //
-//	>= budget_soft -> guided: inject a reminder, the LLM calls the compress tool
+//	>= budget_soft -> guided: inject a reminder, the LLM calls the
+//	   context.compress tool
 //	>= budget_hard -> direct: the system compacts without waiting for the LLM
 //
 // Compaction is orchestrated here, not in the transcript: the summary is an LLM
@@ -62,7 +63,7 @@ func (w *BaseReasonWorker) recordUsage(ctx context.Context, msg llm.Message) {
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText,
 				Text: fmt.Sprintf("[system] Context usage is at %d%% of the model window (%d/%d tokens). "+
-					"Consider calling the compress tool to summarize older history before continuing.",
+					"Consider calling the context.compress tool to summarize older history before continuing.",
 					int(ratio*100), w.lastUsageTokens, w.contextWindow)}},
 		}}})
 	case ratio < w.budgetSoft:

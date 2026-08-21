@@ -161,6 +161,7 @@ func (w *BaseReasonWorker) Stop() error {
 	w.cancelRun()
 	w.cancelRun = nil
 	w.started = false
+
 	return nil
 }
 
