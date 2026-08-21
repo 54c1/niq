@@ -105,18 +105,25 @@ func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.Comple
 		}
 		var llmErr *llm.LLMError
 		if !errors.As(callErr, &llmErr) {
-			return false, callErr
+			// A non-LLMError is not classified; treat it as transient and retry.
+			return true, callErr
 		}
 		if llmErr.Type == llm.ErrorContextLength {
 			// Over the hard limit the provider rejected the request: compact
-			// synchronously (our own lock discipline) and retry once with the
-			// shrunk context. rebuildContext refreshes the request's messages.
+			// synchronously (our own lock discipline), then retry with the
+			// shrunk context.
 			if cerr := w.compactTranscript(reasonCtx, w.compactDirective(), w.keepTail); cerr == nil {
 				req.Context.Messages = w.renderTranscriptLocked()
-				return true, nil
+				// Return the original error so retry keeps looping (retry
+				// treats a nil error as success); the next attempt uses the
+				// compacted context.
+				return true, callErr
 			}
 		}
-		return llmErr.Type == llm.ErrorRateLimit || llmErr.Type == llm.ErrorTimeout, callErr
+		// Retry everything except authentication: rate limits, timeouts,
+		// provider-side blips and other transient LLM errors all deserve a few
+		// backoff attempts; only an auth failure is permanent.
+		return llmErr.Type != llm.ErrorAuthFailed, callErr
 	})
 	return stream, err
 }
