@@ -154,12 +154,10 @@ func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 		callID, _ := evt.Payload["call_id"].(string)
 		name, _ := evt.Payload["name"].(string)
 		if callID != "" && name != "" {
-			cause := ""
-			if parked != nil {
-				cause = string(parked.ParkCause)
-			}
 			if text, _ := resultOutcome(evt); text != "" {
-				w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
+				w.transcript.Apply(transcript.LateResult{
+					CallID: callID, Name: name, Text: text, Cause: string(parked.ParkCause),
+				})
 			}
 		}
 	}
