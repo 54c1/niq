@@ -301,7 +301,7 @@ func (w *BaseReasonWorker) cancelTimeout() {
 	}
 	// Look up the timer worker ID from the set_tool_timeout tool definition.
 	targetID := ""
-	if t, ok := w.tools["timer.set_tool_timeout"]; ok {
+	if t, ok := w.tools[encodeTimerTimeout]; ok {
 		targetID = t.Provider
 	}
 

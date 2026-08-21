@@ -362,20 +362,13 @@ func (w *BaseReasonWorker) finishReasoning(ctx context.Context, traceID string, 
 func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlock, traceID string) {
 	busCalls := toolCalls
 
-	// Desanitize tool names first using index-based access so the
-	// changes apply to the actual slice elements (for _, tc := range
-	// creates copies whose modifications are lost).
-	for i := range busCalls {
-		busCalls[i].ToolName = desanitizeToolName(w, busCalls[i].ToolName)
-	}
-
 	// Record the current round's single timeout timer, if any. At most one
 	// is meaningful — the first timer to fire parks all pending tools. Only
 	// record if the tool exists in w.tools — if the providing worker hasn't
 	// announced yet or was removed, skip so cancelTimeout/handleTimeout
 	// are naturally disabled.
 	for _, tc := range busCalls {
-		if tc.ToolName == "timer.set_tool_timeout" {
+		if tc.ToolName == encodeTimerTimeout {
 			if _, ok := w.tools[tc.ToolName]; ok {
 				w.activeTimeout = tc.ToolCallID
 			}
@@ -407,9 +400,9 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 			})
 			continue
 		}
-		// Strip the worker ID prefix so the target worker receives
-		// the original tool name (e.g. "workspace.bash" → "bash").
-		tc.ToolName = strings.TrimPrefix(tc.ToolName, t.Provider+".")
+		// The target worker receives its bare tool name (strip the
+		// provider prefix: "timer__set_tool_timeout" → "set_tool_timeout").
+		tc.ToolName = strings.TrimPrefix(tc.ToolName, t.Provider+"__")
 		callsByTarget[t.Provider] = append(callsByTarget[t.Provider], tc)
 	}
 	for target, calls := range callsByTarget {

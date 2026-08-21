@@ -7,31 +7,28 @@ import (
 	"github.com/54c1/niq/core/worker"
 )
 
-// TestSanitizeToolName verifies dots become underscores so the name is a valid
-// LLM tool identifier.
-func TestSanitizeToolName(t *testing.T) {
-	if got := sanitizeToolName("workspace.bash"); got != "workspace_bash" {
-		t.Fatalf("sanitize = %q, want workspace_bash", got)
+// TestEncodeToolNameBuiltin verifies a tool whose provider is this worker (or
+// empty) keeps a bare name, with inner dots turned to underscores, so it is a
+// valid LLM tool identifier.
+func TestEncodeToolNameBuiltin(t *testing.T) {
+	w := newBaseForTest(nil, newTestChannel())
+	if got := encodeToolName(w, worker.Tool{Name: "context.compress", Provider: w.ID()}); got != "context_compress" {
+		t.Fatalf("builtin encode = %q, want context_compress", got)
 	}
-	if got := sanitizeToolName("plain"); got != "plain" {
-		t.Fatalf("sanitize = %q, want plain", got)
+	if got := encodeToolName(w, worker.Tool{Name: "send_message", Provider: ""}); got != "send_message" {
+		t.Fatalf("bare encode = %q, want send_message", got)
 	}
 }
 
-// TestDesanitizeToolName verifies the sanitized→original mapping round-trips
-// through the toolNameMap built by toolDefs.
-func TestDesanitizeToolName(t *testing.T) {
+// TestEncodeToolNameExternal verifies a tool backed by another worker becomes
+// provider__name, so the worker/tool boundary is unambiguous.
+func TestEncodeToolNameExternal(t *testing.T) {
 	w := newBaseForTest(nil, newTestChannel())
-	w.tools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
-	tools := []worker.Tool{w.tools["workspace.bash"]}
-	_ = toolDefs(w, tools)
-
-	if got := desanitizeToolName(w, "workspace_bash"); got != "workspace.bash" {
-		t.Fatalf("desanitize = %q, want workspace.bash", got)
+	if got := encodeToolName(w, worker.Tool{Name: "bash", Provider: "workspace"}); got != "workspace__bash" {
+		t.Fatalf("external encode = %q, want workspace__bash", got)
 	}
-	// Unknown sanitized name passes through unchanged.
-	if got := desanitizeToolName(w, "nope"); got != "nope" {
-		t.Fatalf("desanitize unknown = %q, want nope", got)
+	if got := encodeToolName(w, worker.Tool{Name: "set_tool_timeout", Provider: "timer"}); got != "timer__set_tool_timeout" {
+		t.Fatalf("timer encode = %q, want timer__set_tool_timeout", got)
 	}
 }
 
@@ -51,9 +48,9 @@ func TestHandleWorkerReadyAndGone(t *testing.T) {
 	})
 	w.handleWorkerReady(ready)
 
-	// Tool is prefixed with the worker ID.
-	if _, ok := w.tools["workspace.bash"]; !ok {
-		t.Fatalf("expected workspace.bash tool, got %+v", keys(w.tools))
+	// Tool is prefixed with the worker ID (encoded as provider__name).
+	if _, ok := w.tools["workspace__bash"]; !ok {
+		t.Fatalf("expected workspace__bash tool, got %+v", keys(w.tools))
 	}
 	if _, ok := w.publishMap["workspace"]; !ok {
 		t.Fatal("expected published events for workspace")
@@ -61,7 +58,7 @@ func TestHandleWorkerReadyAndGone(t *testing.T) {
 
 	gone := event.New(event.TypeWorkerGone, "host", map[string]any{"worker_id": "workspace"})
 	w.handleWorkerGone(gone)
-	if _, ok := w.tools["workspace.bash"]; ok {
+	if _, ok := w.tools["workspace__bash"]; ok {
 		t.Fatal("tool should be removed after worker.gone")
 	}
 	if _, ok := w.publishMap["workspace"]; ok {
@@ -83,7 +80,7 @@ func TestDefaultProviderInstallsFourBuiltins(t *testing.T) {
 	w := newBaseForTest(nil, newTestChannel())
 
 	want := map[string]bool{"send_message": true, "list_workers": true,
-		"context.compress": true, "context.rotate": true}
+		"context_compress": true, "context_rotate": true}
 	for name := range want {
 		if _, ok := w.tools[name]; !ok {
 			t.Fatalf("expected built-in tool %q, got %+v", name, keys(w.tools))
@@ -110,7 +107,7 @@ func (p *customProvider) ToolDefinitions() []worker.Tool {
 
 func (p *customProvider) HandleToolCall(tc worker.ToolCall) {
 	switch tc.Name {
-	case "github.review":
+	case "github_review":
 		p.w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, "review started", tc.TraceID)
 	default:
 		p.BuiltinTools.HandleToolCall(tc)
@@ -132,8 +129,8 @@ func TestCustomProviderExtendsDefault(t *testing.T) {
 	prov.BuiltinTools = NewBuiltinTools(w)
 	w.initBuiltinTools()
 
-	if _, ok := w.tools["github.review"]; !ok {
-		t.Fatalf("expected github.review, got %+v", keys(w.tools))
+	if _, ok := w.tools["github_review"]; !ok {
+		t.Fatalf("expected github_review, got %+v", keys(w.tools))
 	}
 	if _, ok := w.tools["send_message"]; !ok {
 		t.Fatalf("default tool should be kept when provider extends it, got %+v", keys(w.tools))
@@ -151,7 +148,7 @@ func TestCustomProviderDispatch(t *testing.T) {
 
 	// github.review → handled by custom provider.
 	evt := event.New(event.TypeToolRequested, "me", map[string]any{
-		"call_id": "c1", "name": "github.review", "arguments": map[string]any{},
+		"call_id": "c1", "name": "github_review", "arguments": map[string]any{},
 	})
 	evt.WorkerId = "me"
 	w.handleToolRequest(evt)

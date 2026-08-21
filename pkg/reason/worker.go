@@ -109,7 +109,6 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		publishMap:               make(map[string][]EventPublish),
 		eventConverters:          cfg.EventConverters,
 		programs:                 cfg.Programs,
-		toolNameMap:              make(map[string]string),
 		toolCallTracker:          NewToolCallTracker(),
 		contextWindow:            cfg.ContextWindow,
 		budgetSoft:               cfg.BudgetSoft,
@@ -214,7 +213,6 @@ type BaseReasonWorker struct {
 	tools           map[string]worker.Tool // tools from the bus + built-ins; read by dispatch
 	programs        []program.Program
 	publishMap      map[string][]EventPublish // worker ID -> published events
-	toolNameMap     map[string]string         // maps sanitized name -> original tool name
 	toolCallTracker *ToolCallTracker
 
 	toolProvider    ToolProvider

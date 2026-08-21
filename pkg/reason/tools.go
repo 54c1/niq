@@ -128,6 +128,7 @@ func (t *BuiltinTools) HandleToolCall(tc worker.ToolCall) {
 // the LLM sees them and calls route back here.
 func (w *BaseReasonWorker) initBuiltinTools() {
 	for _, t := range w.toolProvider.ToolDefinitions() {
+		t.Name = encodeToolName(w, t)
 		w.tools[t.Name] = t
 	}
 }
@@ -149,13 +150,14 @@ func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 				if name == "" {
 					continue
 				}
-				prefixed := workerID + "." + name
-				w.tools[prefixed] = worker.Tool{
-					Name:        prefixed,
+				t := worker.Tool{
+					Name:        name,
 					Description: desc,
 					Parameters:  params,
 					Provider:    workerID,
 				}
+				t.Name = encodeToolName(w, t)
+				w.tools[t.Name] = t
 			}
 			log.Printf("[reason %s] received %d tool(s) from %s", w.ID(), len(toolsRaw), workerID)
 		}
@@ -184,6 +186,11 @@ func (w *BaseReasonWorker) handleWorkerGone(evt event.Event) {
 	delete(w.publishMap, workerID)
 	log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 }
+
+// encodeTimerTimeout is the encoded name of the timer worker's
+// set_tool_timeout tool (provider "timer"), which the reason loop treats
+// specially as the current round's timeout timer.
+const encodeTimerTimeout = "timer__set_tool_timeout"
 
 // handleToolRequest processes a tool.requested event targeting this worker by
 // dispatching to its tool provider.
@@ -343,17 +350,12 @@ func compactResultText(kind string, err error) string {
 }
 
 // toolDefs builds the LLM tool definitions from the known tools, rebuilding the
-// sanitized-name mapping (dot → underscore) so tool calls can be desanitized.
+// sanitized-name mapping so the LLM-facing name is the w.tools key.
 func toolDefs(w *BaseReasonWorker, tools []worker.Tool) []llm.ToolDef {
-	// Rebuild the sanitized-name mapping.
-	w.toolNameMap = make(map[string]string, len(tools))
-
 	out := make([]llm.ToolDef, len(tools))
 	for i, t := range tools {
-		sane := sanitizeToolName(t.Name)
-		w.toolNameMap[sane] = t.Name
 		out[i] = llm.ToolDef{
-			Name:        sane,
+			Name:        encodeToolName(w, t),
 			Description: t.Description,
 			Parameters:  t.Parameters,
 		}
@@ -361,15 +363,17 @@ func toolDefs(w *BaseReasonWorker, tools []worker.Tool) []llm.ToolDef {
 	return out
 }
 
-func sanitizeToolName(name string) string {
-	return strings.ReplaceAll(name, ".", "_")
-}
-
-func desanitizeToolName(w *BaseReasonWorker, sane string) string {
-	if orig, ok := w.toolNameMap[sane]; ok {
-		return orig
+// encodeToolName maps a Tool to the name both the w.tools table and the LLM
+// use. Built-ins (provider == this worker, or empty) keep a bare name (with
+// inner '.' -> '_'); tools backed by another worker become provider__name, so
+// the worker/tool boundary is unambiguous. Invariant: worker IDs and tool
+// names must not contain "__" (double underscore); '__' is the separator.
+func encodeToolName(w *BaseReasonWorker, t worker.Tool) string {
+	p, n := t.Provider, t.Name
+	if p == "" || p == w.ID() {
+		return strings.ReplaceAll(n, ".", "_")
 	}
-	return sane
+	return p + "__" + strings.ReplaceAll(n, ".", "_")
 }
 
 // sendToolRequests sends a directed tool.requested event for each tool call
