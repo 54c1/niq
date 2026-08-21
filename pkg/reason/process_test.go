@@ -3,6 +3,7 @@ package reason
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
@@ -147,4 +148,48 @@ func TestLateToolResult(t *testing.T) {
 	if len(last.Content) == 0 || !strings.Contains(last.Content[0].Text, "late-out") {
 		t.Fatalf("late message should carry the outcome, got %+v", last.Content)
 	}
+}
+
+// TestInputScheduleIsGentle verifies the "schedule" input_mode (level 2) does
+// not interrupt an in-flight reasoning call, but schedules the next round and
+// records the cause for parking.
+func TestInputScheduleIsGentle(t *testing.T) {
+	prov := &blockingProvider{started: make(chan struct{}), release: make(chan struct{})}
+	w, ch, _ := startWorker(t, prov)
+
+	// Hold a reasoning round in flight.
+	ch.in <- event.New(event.TypeWorkerInput, "hiw", map[string]any{"text": "hello", "input_mode": "default"})
+	waitCond(t, testTimeout, func() bool {
+		select {
+		case <-prov.started:
+			return true
+		default:
+			return false
+		}
+	}, "reasoning to start")
+
+	// A schedule-mode input must not interrupt the in-flight call.
+	ch.in <- event.New(event.TypeWorkerInput, "hiw", map[string]any{"text": "note", "input_mode": "schedule"})
+	time.Sleep(50 * time.Millisecond)
+	if ch.hasInterrupted() {
+		t.Fatal("schedule-mode input must not interrupt in-flight reasoning")
+	}
+
+	// The schedule input records the cause for the next round's parking.
+	waitCond(t, testTimeout, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.immediateReasoningCause == PreemptCauseInput
+	}, "schedule input to record cause")
+	w.mu.Lock()
+	cause := w.immediateReasoningCause
+	w.mu.Unlock()
+	if cause != PreemptCauseInput {
+		t.Fatalf("schedule input should set immediateReasoningCause, got %q", cause)
+	}
+
+	close(prov.release)
+	waitCond(t, testTimeout, func() bool {
+		return len(ch.eventsOf("reason.end")) > 0
+	}, "reason.end")
 }

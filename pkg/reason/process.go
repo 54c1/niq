@@ -154,7 +154,10 @@ func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 //	"append" — level 1: append the message and schedule a new round, but only
 //	            when the system is idle (no in-flight reasoning, no pending
 //	            tool calls). Does not interrupt or park anything.
-//	anything else (incl. hiw's usual "default") — level 3 interrupt: cancel the
+//	"schedule" — level 2: append the message and schedule a fresh round, parking
+//	            pending tools when it starts, without interrupting an in-flight
+//	            call (a gentle wake-up, like a reminder).
+//	else (incl. hiw's usual "default") — level 3 interrupt: cancel the
 //	            in-flight reasoning call and schedule a fresh round; pending
 //	            tools are parked when reason() starts (using the stored cause).
 func (w *BaseReasonWorker) handleInput(evt event.Event) {
@@ -166,6 +169,8 @@ func (w *BaseReasonWorker) handleInput(evt event.Event) {
 	switch mode {
 	case "append":
 		w.appendInput(msgs)
+	case "schedule":
+		w.scheduleInput(msgs, PreemptCauseInput)
 	default:
 		w.interruptInput(msgs, PreemptCauseInput)
 	}
