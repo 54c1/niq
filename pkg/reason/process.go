@@ -1,0 +1,380 @@
+// Event dispatch and the transcript-input translation it needs.
+//
+// process routes a single event to one handler; each handler and its
+// helper converts the event into a transcript input. This is the "what to
+// do with an event" half of the watch loop (the loop itself lives in
+// watch.go).
+//
+// Three levels of input handling:
+//
+//	level 1 (append):  append message, schedule if idle, no park
+//	level 2 (reminder/timeout): append message, schedule, park on next round
+//	level 3 (default): interrupt, schedule, park on next round
+package reason
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	"github.com/54c1/niq/core/event"
+	"github.com/54c1/niq/core/llm"
+	"github.com/54c1/niq/pkg/reason/transcript"
+)
+
+// process routes an event through one of the dispatch paths:
+//   - abort: park pending tools + recall, clear needReason
+//   - timer.timeout: record system message + schedule (level 2)
+//   - timer.reminder: convert to messages + schedule (level 2)
+//   - worker.ready/gone: learn/forget a worker's tools & events
+//   - tool result: resolve / park-late / update placeholder
+//   - input: convert to messages + schedule (level 1/2/3 via input_mode)
+func (w *BaseReasonWorker) process(_ context.Context, evt event.Event) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	log.Printf("[reason %s] event: %s (from=%s)", w.ID(), evt.Type, evt.WorkerId)
+
+	switch {
+	case evt.Type == event.TypeWorkerDiscover:
+		if evt.WorkerId != w.ID() {
+			w.broadcastReady()
+		}
+	case evt.Type == event.TypeWorkerAbort:
+		w.handleAbort(evt)
+	case evt.Type == "timer.timeout":
+		w.handleTimeout(evt)
+	case evt.Type == "timer.reminder":
+		w.handleReminder(evt)
+	case evt.Type == event.TypeWorkerReady:
+		w.handleWorkerReady(evt)
+	case evt.Type == event.TypeWorkerGone:
+		w.handleWorkerGone(evt)
+	case isToolResultEvent(evt.Type):
+		w.handleToolResult(evt)
+	case evt.Type == event.TypeToolRequested:
+		w.handleToolRequest(evt)
+	default:
+		w.handleInput(evt)
+	}
+}
+
+// handleAbort cancels the current LLM call, parks all pending tools (so late
+// results can still be contextualized), best-effort recalls them, and records
+// the abort in the conversation transcript. needReason is cleared so no new
+// reasoning round starts until the next worker.input.
+func (w *BaseReasonWorker) handleAbort(_ event.Event) {
+	w.interruptReason = PreemptCauseAbort
+
+	// Broadcast reason end
+	hadReasoning := w.cancelReason != nil
+	if !hadReasoning {
+		// No reasoning round was in flight to publish the interrupt lifecycle.
+		w.broadcastReasonEnd(w.currentTraceID, StopReasonAborted)
+	}
+
+	// Cancel current running reason
+	if w.cancelReason != nil {
+		w.cancelReason()
+		w.cancelReason = nil
+	}
+
+	// Park and recall tool calls
+	tcs := w.parkPending(PreemptCauseAbort)
+	w.recallToolCalls(tcs)
+
+	// Record the abort in the conversation transcript so the LLM
+	// knows what happened when the next round starts.
+	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
+		Role: llm.RoleUser,
+		Content: []llm.ContentBlock{{Type: llm.ContentText,
+			Text: fmt.Sprintf("[system] reasoning was aborted. %d tool call(s) parked.", len(tcs))}},
+	}}})
+
+	w.needReason = false
+}
+
+// handleTimeout processes a timer.timeout event (from set_tool_timeout).
+// Records a system message and schedules a fresh reasoning round.
+// Stale timers (cancelled or prior batch) are silently discarded.
+func (w *BaseReasonWorker) handleTimeout(evt event.Event) {
+	timerID, _ := evt.Payload["timer_id"].(string)
+
+	// Only the current round's timer is meaningful; an orphaned timer from a
+	// prior round (whose call_id no longer matches) is silently discarded.
+	if w.activeTimeout != "" && timerID == w.activeTimeout {
+		w.captureTraceID(evt)
+		msg := llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "[system] tool call timeout"}},
+		}
+		w.scheduleInput([]llm.Message{msg}, PreemptCauseTimeout)
+	}
+}
+
+// handleReminder processes a timer.reminder event (from elapse). It wakes the
+// LLM — the event payload carries the purpose so the LLM knows what to do. A
+// reminder is a gentle wake-up: it schedules fresh reasoning without cancelling
+// any in-flight reasoning call.
+func (w *BaseReasonWorker) handleReminder(evt event.Event) {
+	w.captureTraceID(evt)
+	msgs := w.convertEvent(evt)
+	w.scheduleInput(msgs, PreemptCauseReminder)
+}
+
+// handleToolResult processes a tool.completed/failed/rejected event.
+// Normal path: resolve a Pending call and update its placeholder.
+// Late path: match a Parked call and append a contextualized message.
+// Untracked call_ids (e.g. synthetic cancel responses) are ignored.
+func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
+	// Normal resolution of a Pending call.
+	if w.toolCallTracker.HandleResponse(evt) {
+		w.updatePlaceholderFromEvent(evt)
+		// All tool calls resolved
+		if w.toolCallTracker.Resolved() {
+			w.cancelTimeout()
+			w.needReason = true
+		}
+		return
+	}
+
+	// Late result for a Parked call.
+	if parked := w.toolCallTracker.ResolveLate(evt); parked != nil {
+		w.appendLateResult(parked, evt)
+	}
+}
+
+// handleInput processes an input event. The input_mode field in the payload
+// controls how the event interacts with pending tool calls:
+//
+//	"default" — level 3: interrupt the in-flight reasoning call and schedule
+//	             a fresh round. The pending tools are parked when reason()
+//	             starts (using the stored cause).
+//	"append"  — level 1: append the message and schedule a new round, but only
+//	             when the system is idle (no in-flight reasoning, no pending
+//	             tool calls). Does not interrupt or park anything.
+func (w *BaseReasonWorker) handleInput(evt event.Event) {
+	w.captureTraceID(evt)
+
+	msgs := w.convertEvent(evt)
+
+	mode, _ := evt.Payload["input_mode"].(string)
+	switch mode {
+	case "append":
+		w.appendInput(msgs)
+	default:
+		w.interruptInput(msgs, PreemptCauseInput)
+	}
+}
+
+// recallToolCalls best-effort cancels in-flight tool calls by sending a
+// tool.cancel event to each call's target worker.
+func (w *BaseReasonWorker) recallToolCalls(tcs []*ToolCall) {
+	byTarget := make(map[string][]string)
+	for _, rc := range tcs {
+		if rc.TargetID != "" {
+			byTarget[rc.TargetID] = append(byTarget[rc.TargetID], rc.CallID)
+		}
+	}
+
+	for target, callIDs := range byTarget {
+		for _, callID := range callIDs {
+			evt := event.New(event.TypeToolCancel, w.ID(), map[string]any{
+				"call_id": callID,
+			})
+			evt.TraceID = w.currentTraceID
+			_ = w.Channel.Send(context.Background(), evt, target)
+		}
+	}
+}
+
+// appendInput appends messages and schedules a new round only when the system
+// is idle - no in-flight reasoning and no pending tool calls. Does not
+// interrupt or park anything. This is the least intrusive input mode (level 1).
+func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
+
+	if !w.isReasoning && w.toolCallTracker.Resolved() {
+		w.needReason = true
+	}
+}
+
+// scheduleInput appends messages, records the cause, and schedules a fresh
+// reasoning round. The pending tools are parked when reason() starts, not
+// here. This is the moderate input mode (level 2) — it does not interrupt
+// an in-flight reasoning call, but ensures the next round responds promptly.
+func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.immediateReasoningCause = cause
+	w.needReason = true
+}
+
+// interruptInput cancels the in-flight reasoning call, records the cause,
+// and schedules a fresh round. The pending tools are parked when reason()
+// starts. This is the strongest input mode (level 3) — it interrupts the
+// current LLM call so the new input is handled immediately.
+func (w *BaseReasonWorker) interruptInput(msgs []llm.Message, cause PreemptCause) {
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.interruptReason = cause
+	if w.cancelReason != nil {
+		w.cancelReason()
+		w.cancelReason = nil
+	}
+	w.immediateReasoningCause = cause
+	w.needReason = true
+}
+
+// captureTraceID propagates the trace_id from an incoming event into the
+// worker's current trace, so all events published during the reasoning round
+// it triggers share the same trace. Events without a trace_id leave it unchanged.
+func (w *BaseReasonWorker) captureTraceID(evt event.Event) {
+	if evt.TraceID != "" {
+		w.currentTraceID = evt.TraceID
+	}
+}
+
+// parkPending parks all pending tool calls with the given cause and cancels the
+// current round's timeout timer. Returns the parked calls for callers that need
+// to recall them (e.g., handleAbort).
+func (w *BaseReasonWorker) parkPending(cause PreemptCause) []*ToolCall {
+	tcs := w.toolCallTracker.ParkAll(cause)
+	for _, rc := range tcs {
+		w.transcript.Apply(transcript.ToolParked{
+			CallID: rc.CallID,
+			Name:   rc.Name,
+			Cause:  string(cause),
+		})
+	}
+	w.cancelTimeout()
+	return tcs
+}
+
+// cancelTimeout cancels the current round's active timeout timer by
+// sending a tool.cancel event to the timer worker. Called when all tools have resolved
+// — the timeout is no longer needed.
+func (w *BaseReasonWorker) cancelTimeout() {
+	if w.activeTimeout == "" {
+		return
+	}
+	// Look up the timer worker ID from the set_tool_timeout tool definition.
+	targetID := ""
+	if t, ok := w.tools[encodeTimerTimeout]; ok {
+		targetID = t.Provider
+	}
+
+	// Send cancel event
+	timerID := w.activeTimeout
+	evt := event.New(event.TypeToolCancel, w.ID(), map[string]any{
+		"call_id":  timerID + "-cancel",
+		"timer_id": timerID,
+	})
+	_ = w.Channel.Send(context.Background(), evt, targetID)
+
+	w.activeTimeout = ""
+}
+
+// ── event → transcript input translation ──
+
+// isToolResultEvent reports whether the given event type is a tool
+// lifecycle event consumed by the LLM worker.
+func isToolResultEvent(typ event.EventType) bool {
+	return typ == event.TypeToolCompleted || typ == event.TypeToolFailed || typ == event.TypeToolRejected
+}
+
+// convertEvent routes an event through the registered EventConverters.
+// Matching uses the subscription's full semantics (type + optional source).
+func (w *BaseReasonWorker) convertEvent(evt event.Event) []llm.Message {
+	for _, h := range w.eventConverters {
+		if h.Pattern.Matches(evt) {
+			return h.Converter(evt)
+		}
+	}
+	return DefaultConverter(evt)
+}
+
+// DefaultConverter formats an event as a plain-text user message.
+// Convention: if the payload contains a "text" field, it is used as the
+// primary content (first line), followed by the event metadata and full
+// payload JSON. This lets event producers provide a human-readable summary
+// while preserving the full structured data for the LLM.
+func DefaultConverter(evt event.Event) []llm.Message {
+	payloadStr := "{}"
+	if evt.Payload != nil {
+		if b, err := json.Marshal(evt.Payload); err == nil {
+			payloadStr = string(b)
+		}
+	}
+
+	text, _ := evt.Payload["text"].(string)
+	if text != "" {
+		return []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentBlock{{
+				Type: llm.ContentText,
+				Text: fmt.Sprintf("%s\n\n[Event: %s from %s]\n%s", text, evt.Type, evt.WorkerId, payloadStr),
+			}},
+		}}
+	}
+
+	return []llm.Message{{
+		Role: llm.RoleUser,
+		Content: []llm.ContentBlock{{
+			Type: llm.ContentText,
+			Text: fmt.Sprintf("[Event: %s from %s]\n%s", evt.Type, evt.WorkerId, payloadStr),
+		}},
+	}}
+}
+
+// resultOutcome extracts the human-readable outcome text and error flag from a
+// tool result event. Used by both the normal-resolution and late-result paths.
+func resultOutcome(evt event.Event) (string, bool) {
+	switch evt.Type {
+	case event.TypeToolCompleted:
+		if r, ok := evt.Payload["result"]; ok {
+			return fmt.Sprintf("%v", r), false
+		}
+	case event.TypeToolFailed:
+		if e, ok := evt.Payload["error"]; ok {
+			return "Tool call failed: " + fmt.Sprintf("%v", e), true
+		}
+	case event.TypeToolRejected:
+		if r, ok := evt.Payload["reason"]; ok {
+			return "Tool call rejected: " + fmt.Sprintf("%v", r), true
+		}
+	}
+	return "", false
+}
+
+// updatePlaceholderFromEvent translates a tool result event into a
+// ToolResult input and applies it, replacing the [pending] placeholder.
+func (w *BaseReasonWorker) updatePlaceholderFromEvent(evt event.Event) {
+	callID, _ := evt.Payload["call_id"].(string)
+	name, _ := evt.Payload["name"].(string)
+	if callID == "" {
+		return
+	}
+	text, isErr := resultOutcome(evt)
+	w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
+}
+
+// appendLateResult translates a late-arriving result on a parked call into a
+// LateResult input and applies it (appended as a user message - a second
+// tool_result for the same call_id would violate the pairing invariant).
+// parked carries the cause so the message explains why the call was parked.
+func (w *BaseReasonWorker) appendLateResult(parked *ToolCall, evt event.Event) {
+	callID, _ := evt.Payload["call_id"].(string)
+	name, _ := evt.Payload["name"].(string)
+	if callID == "" || name == "" {
+		return
+	}
+
+	cause := ""
+	if parked != nil {
+		cause = string(parked.ParkCause)
+	}
+
+	if text, _ := resultOutcome(evt); text != "" {
+		w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
+	}
+}

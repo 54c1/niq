@@ -162,6 +162,15 @@ func (w *BaseReasonWorker) Start(ctx context.Context) error {
 	return nil
 }
 
+// broadcastReady re-announces this worker's presence on the bus in response
+// to a worker.discover. A worker-level identity action.
+func (w *BaseReasonWorker) broadcastReady() {
+	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
+		"worker_id": w.ID(),
+		"type":      "reason",
+	}))
+}
+
 // Stop cancels the worker's event watch.
 func (w *BaseReasonWorker) Stop() error {
 	w.mu.Lock()
