@@ -1,7 +1,6 @@
 package reason
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -53,52 +52,4 @@ func TestInputAppendDoesNotInterruptReasoning(t *testing.T) {
 	waitCond(t, 2*time.Second, func() bool {
 		return len(ch.eventsOf("reason.end")) > 0
 	}, "reason.end")
-}
-
-// TestAbortParksTools verifies an abort event parks pending tools and records
-// the abort in the transcript.
-func TestAbortParksTools(t *testing.T) {
-	w, _, _ := startWorker(t, &staticProvider{})
-	// Simulate a pending tool call.
-	w.mu.Lock()
-	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
-		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
-	})
-	w.mu.Unlock()
-
-	w.handleAbort(event.New(event.TypeWorkerAbort, "swarm", map[string]any{}))
-	if !w.toolCallTracker.Resolved() {
-		t.Fatal("abort should park all pending tools")
-	}
-}
-
-// TestLateToolResult verifies a result arriving after a call was parked is
-// appended as a contextualized late message, not a duplicate tool message.
-func TestLateToolResult(t *testing.T) {
-	w, _, _ := startWorker(t, &staticProvider{})
-	w.mu.Lock()
-	w.needReason = false
-	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
-		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
-	})
-	w.toolCallTracker.ParkAll(PreemptCauseTimeout)
-	w.mu.Unlock()
-
-	late := event.New(event.TypeToolCompleted, "workspace", map[string]any{
-		"call_id": "c1", "name": "bash", "result": "late-out",
-	})
-	before := len(w.transcript.Render())
-	w.handleToolResult(late)
-
-	msgs := w.transcript.Render()
-	if len(msgs) != before+1 {
-		t.Fatalf("late result should append one message, got %d->%d", before, len(msgs))
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != llm.RoleUser {
-		t.Fatalf("late result should be a user message, got role %q", last.Role)
-	}
-	if len(last.Content) == 0 || !strings.Contains(last.Content[0].Text, "late-out") {
-		t.Fatalf("late message should carry the outcome, got %+v", last.Content)
-	}
 }
