@@ -112,7 +112,7 @@ func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.Comple
 			// synchronously (our own lock discipline) and retry once with the
 			// shrunk context. rebuildContext refreshes the request's messages.
 			if cerr := w.compactTranscript(reasonCtx, w.compactDirective(), w.keepTail); cerr == nil {
-				req.Context.Messages = w.snapshotMessages()
+				req.Context.Messages = w.renderTranscriptLocked()
 				return true, nil
 			}
 		}
@@ -121,9 +121,11 @@ func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.Comple
 	return stream, err
 }
 
-// snapshotMessages returns the current transcript under a brief lock, for
-// rebuilding a request after compaction.
-func (w *BaseReasonWorker) snapshotMessages() []llm.Message {
+// renderTranscriptLocked returns the current transcript for a caller that is
+// NOT holding w.mu. It takes the lock itself: Render() is only safe under the
+// mutex (transcripts are passive; the caller serializes access), so callers
+// outside the lock must go through this wrapper rather than Render() directly.
+func (w *BaseReasonWorker) renderTranscriptLocked() []llm.Message {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.transcript.Render()
