@@ -87,10 +87,10 @@ func TestLateToolResult(t *testing.T) {
 	late := event.New(event.TypeToolCompleted, "workspace", map[string]any{
 		"call_id": "c1", "name": "bash", "result": "late-out",
 	})
-	before := len(w.Transcript.Render())
+	before := len(w.transcript.Render())
 	w.handleToolResult(late)
 
-	msgs := w.Transcript.Render()
+	msgs := w.transcript.Render()
 	if len(msgs) != before+1 {
 		t.Fatalf("late result should append one message, got %d->%d", before, len(msgs))
 	}

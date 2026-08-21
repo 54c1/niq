@@ -59,7 +59,7 @@ func (w *BaseReasonWorker) recordUsage(ctx context.Context, msg llm.Message) {
 		w.budgetReminded = true
 		log.Printf("[reason %s] context soft budget %.0f%% (%d/%d tokens) - reminding",
 			w.ID(), ratio*100, w.lastUsageTokens, w.contextWindow)
-		w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
+		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText,
 				Text: fmt.Sprintf("[system] Context usage is at %d%% of the model window (%d/%d tokens). "+
@@ -94,7 +94,7 @@ func (w *BaseReasonWorker) compactTranscript(ctx context.Context, directive stri
 		return fmt.Errorf("compaction already in flight")
 	}
 	w.isCompacting = true
-	msgSnapshot := w.Transcript.Render()
+	msgSnapshot := w.transcript.Render()
 	projection := projectTranscript(msgSnapshot)
 	previousDigest := currentDigest(msgSnapshot)
 	w.mu.Unlock()
@@ -107,7 +107,7 @@ func (w *BaseReasonWorker) compactTranscript(ctx context.Context, directive stri
 		w.mu.Unlock()
 		return fmt.Errorf("summarize: %w", err)
 	}
-	w.Transcript.Compact(digest, keepTail)
+	w.transcript.Compact(digest, keepTail)
 	w.mu.Unlock()
 
 	log.Printf("[reason %s] transcript compacted (keepTail=%d, digest=%d chars, update=%v)",
@@ -126,7 +126,7 @@ func (w *BaseReasonWorker) summarize(ctx context.Context, projection, directive,
 		directive = directive + "\n\nA previous summary exists; update it incrementally: merge new progress " +
 			"into it, move finished items, keep earlier goals and constraints. Previous summary:\n" + previousDigest
 	}
-	resp, err := w.LLMProvider.Complete(ctx, &llm.CompletionRequest{
+	resp, err := w.llmProvider.Complete(ctx, &llm.CompletionRequest{
 		Context: &llm.Context{
 			SystemPrompt: directive,
 			Messages:     []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: projection}}}},

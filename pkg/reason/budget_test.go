@@ -58,14 +58,14 @@ func TestSoftBudgetInjectsReminder(t *testing.T) {
 
 	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 900, OutputTokens: 10}})
 
-	msgs := w.Transcript.Render()
+	msgs := w.transcript.Render()
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Content[0].Text, "91%") {
 		t.Fatalf("expected one budget reminder, got %+v", msgs)
 	}
 
 	// Same side of the threshold: no duplicate reminder.
 	w.recordUsage(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 950, OutputTokens: 5}})
-	if got := len(w.Transcript.Render()); got != 1 {
+	if got := len(w.transcript.Render()); got != 1 {
 		t.Fatalf("reminder should fire once per crossing, got %d messages", got)
 	}
 }
@@ -80,7 +80,7 @@ func TestHardBudgetCompacts(t *testing.T) {
 
 	seed := func(n int) {
 		for i := 0; i < n; i++ {
-			w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 			}})
 		}
@@ -94,11 +94,11 @@ func TestHardBudgetCompacts(t *testing.T) {
 	waitCond(t, testTimeout, func() bool {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		msgs := w.Transcript.Render()
+		msgs := w.transcript.Render()
 		return len(msgs) == 3 && strings.Contains(msgs[0].Content[0].Text, "DIGEST")
 	}, "compaction to apply")
 
-	msgs := w.Transcript.Render()
+	msgs := w.transcript.Render()
 	if msgs[1].Content[0].Text != "e" || msgs[2].Content[0].Text != "f" {
 		t.Fatalf("keepTail=2 should keep last two messages, got %q %q",
 			msgs[1].Content[0].Text, msgs[2].Content[0].Text)
@@ -121,7 +121,7 @@ func TestCompactToolRotates(t *testing.T) {
 	// Seed an episode and the call's own placeholder.
 	seed := func(n int) {
 		for i := 0; i < n; i++ {
-			w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 			}})
 		}
@@ -129,11 +129,11 @@ func TestCompactToolRotates(t *testing.T) {
 	seed(4)
 	// The closing call's assistant message + placeholder, as
 	// handleToolCalls produces them (pairing invariant holds in the tail).
-	w.Transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
+	w.transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
 		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"}},
 	}})
-	w.Transcript.Apply(transcript.ToolPlaceholders{Calls: []llm.ContentBlock{
+	w.transcript.Apply(transcript.ToolPlaceholders{Calls: []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"},
 	}})
 
@@ -152,7 +152,7 @@ func TestCompactToolRotates(t *testing.T) {
 	}, "rotate tool completion")
 
 	// Fresh episode: digest + the closing assistant tool_call + placeholder.
-	msgs := w.Transcript.Render()
+	msgs := w.transcript.Render()
 	if len(msgs) != 3 {
 		t.Fatalf("fresh episode should be digest + tool_call + placeholder, got %d: %+v", len(msgs), msgs)
 	}
@@ -173,7 +173,7 @@ func TestCompactionSingleFlight(t *testing.T) {
 		ContextWindow: 1000})
 
 	for i := 0; i < 4; i++ {
-		w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "x"}}},
 		}})
 	}
@@ -229,12 +229,12 @@ func TestCompactionUpdateMode(t *testing.T) {
 		ContextWindow: 1000})
 
 	// Seed a transcript already headed by a digest (previous compaction).
-	w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: "[context digest] v1: goal=fix bug; done=analysis"}}},
 	}})
 	for i := 0; i < 4; i++ {
-		w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "step"}}},
 		}})
 	}
@@ -251,7 +251,7 @@ func TestCompactionUpdateMode(t *testing.T) {
 		t.Fatalf("update-mode directive missing, prompt: %q", prompt)
 	}
 	// New head carries the v2 digest.
-	msgs := w.Transcript.Render()
+	msgs := w.transcript.Render()
 	if !strings.Contains(msgs[0].Content[0].Text, "DIGEST(v2)") {
 		t.Fatalf("updated digest head expected: %+v", msgs[0])
 	}
@@ -273,7 +273,7 @@ func TestSnapshotOldBlobCompatibility(t *testing.T) {
 	if err := w.Restore([]byte(old)); err != nil {
 		t.Fatalf("old blob restore: %v", err)
 	}
-	msgs := w.Transcript.Render()
+	msgs := w.transcript.Render()
 	if len(msgs) != 1 || msgs[0].Content[0].Text != "hello" {
 		t.Fatalf("old blob content lost: %+v", msgs)
 	}

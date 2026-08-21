@@ -80,7 +80,7 @@ func (w *BaseReasonWorker) prepareReasoning() (traceID string, req *llm.Completi
 	tools := w.allTools()
 	c := &llm.Context{
 		SystemPrompt:    w.buildInstruction(),
-		Messages:        w.Transcript.Render(),
+		Messages:        w.transcript.Render(),
 		Tools:           toolDefs(w, tools),
 		ReasoningEffort: w.reasoningEffort,
 	}
@@ -97,7 +97,7 @@ func (w *BaseReasonWorker) prepareReasoning() (traceID string, req *llm.Completi
 func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.CompletionRequest) (*llm.EventStream, error) {
 	var stream *llm.EventStream
 	err := retry(reasonCtx, 5, func() (bool, error) {
-		s, callErr := w.LLMProvider.CompleteStream(reasonCtx, req)
+		s, callErr := w.llmProvider.CompleteStream(reasonCtx, req)
 		if callErr == nil {
 			stream = s
 			return false, nil
@@ -125,7 +125,7 @@ func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.Comple
 func (w *BaseReasonWorker) snapshotMessages() []llm.Message {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.Transcript.Render()
+	return w.transcript.Render()
 }
 
 // retry executes fn up to maxRetries times with exponential backoff.
@@ -211,7 +211,7 @@ func (w *BaseReasonWorker) consumeStream(reasonCtx context.Context, stream *llm.
 					blocks = append(blocks, llm.ContentBlock{Type: llm.ContentText, Text: partialText})
 				}
 				w.mu.Lock()
-				w.Transcript.Apply(transcript.PartialOutput{Message: llm.Message{
+				w.transcript.Apply(transcript.PartialOutput{Message: llm.Message{
 					Role:       llm.RoleAssistant,
 					Content:    blocks,
 					StopReason: "interrupted",
@@ -319,7 +319,7 @@ func (w *BaseReasonWorker) finishReasoning(ctx context.Context, traceID string, 
 	log.Printf("[reason %s] LLM response: stop_reason=%s, content_blocks=%d",
 		w.ID(), finalMsg.StopReason, len(finalMsg.Content))
 
-	w.Transcript.Apply(transcript.AssistantOutput{Message: finalMsg})
+	w.transcript.Apply(transcript.AssistantOutput{Message: finalMsg})
 
 	// Budget check: record the round's usage and act on thresholds
 	// (soft: remind, hard: schedule compaction). Expects w.mu held.
@@ -371,22 +371,22 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 
 	// Record the current round's single timeout timer, if any. At most one
 	// is meaningful — the first timer to fire parks all pending tools. Only
-	// record if the tool exists in w.Tools — if the providing worker hasn't
+	// record if the tool exists in w.tools — if the providing worker hasn't
 	// announced yet or was removed, skip so cancelTimeout/handleTimeout
 	// are naturally disabled.
 	for _, tc := range busCalls {
 		if tc.ToolName == "timer.set_tool_timeout" {
-			if _, ok := w.Tools[tc.ToolName]; ok {
+			if _, ok := w.tools[tc.ToolName]; ok {
 				w.activeTimeout = tc.ToolCallID
 			}
 		}
 	}
 
-	w.Transcript.Apply(transcript.ToolPlaceholders{Calls: busCalls})
+	w.transcript.Apply(transcript.ToolPlaceholders{Calls: busCalls})
 
 	// Group tool calls by target worker, then publish tool.requested
 	// for each group. The bus routes each batch to the correct worker.
-	// Unknown tools (not in w.Tools, e.g. hallucinated by the LLM) are
+	// Unknown tools (not in w.tools, e.g. hallucinated by the LLM) are
 	// failed immediately instead of broadcast — broadcasting confuses
 	// other workers that subscribe to tool.requested.
 	toolNames := make([]string, len(busCalls))
@@ -396,10 +396,10 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 	log.Printf("[reason %s] requesting %d tool call(s) via bus: %v", w.ID(), len(busCalls), toolNames)
 	callsByTarget := make(map[string][]llm.ContentBlock)
 	for _, tc := range busCalls {
-		t, ok := w.Tools[tc.ToolName]
+		t, ok := w.tools[tc.ToolName]
 		if !ok {
 			log.Printf("[reason %s] unavailable tool: %s - not dispatched", w.ID(), tc.ToolName)
-			w.Transcript.Apply(transcript.ToolResult{
+			w.transcript.Apply(transcript.ToolResult{
 				CallID: tc.ToolCallID,
 				Name:   tc.ToolName,
 				Text:   "Unknown tool '" + tc.ToolName + "': not dispatched - tool not available.",

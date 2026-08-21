@@ -21,7 +21,7 @@ func TestPrepareReasoningBuildsRequest(t *testing.T) {
 	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
 	})
-	w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
+	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
 	w.mu.Unlock()
 
 	traceID, req := w.prepareReasoning()
@@ -45,7 +45,7 @@ func TestPrepareReasoningBuildsRequest(t *testing.T) {
 func TestHandleToolCallsDispatches(t *testing.T) {
 	ch := newTestChannel()
 	w := newBaseForTest(nil, ch)
-	w.Tools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
+	w.tools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
 
 	calls := []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "workspace.bash"},
@@ -84,7 +84,7 @@ func TestHandleToolCallsUnavailable(t *testing.T) {
 	}
 	// The transcript should contain the unavailable-tool tool_result.
 	noDispatch := false
-	for _, m := range w.Transcript.Render() {
+	for _, m := range w.transcript.Render() {
 		if m.ToolCallID == "c1" && m.IsError {
 			noDispatch = true
 		}

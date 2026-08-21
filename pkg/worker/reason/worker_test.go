@@ -63,18 +63,24 @@ func TestWorkerImplementsManagedWorker(t *testing.T) {
 // transcript and Restore rehydrates it into a fresh worker — the durable state
 // that must survive a suspend/resume or crash recovery.
 func TestSnapshotRestoreRoundTrip(t *testing.T) {
-	ch := newMockChannel()
-	w := NewWorker(Config{ID: "r1", Bus: ch})
+	w := NewWorker(Config{ID: "r1", Bus: newMockChannel()})
 
-	// Seed a transcript: a user message, an assistant response, and a tool result.
+	// Seed a transcript: a user message, an assistant response, and a tool result,
+	// by restoring it from an accumulated transcript blob (the transcript's own
+	// write path). This also exercises Restore as the seed mechanism.
 	seed := []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hello"}}},
 		{Role: llm.RoleAssistant, StopReason: "stop", Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}},
 		{Role: llm.RoleToolResult, ToolCallID: "call_1", ToolName: "workspace.bash", IsError: false,
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "ok"}}},
 	}
+	tp := transcript.NewAccumulateTranscript()
 	for _, m := range seed {
-		w.Transcript.Apply(transcript.AssistantOutput{Message: m}) // role preserved verbatim
+		tp.Apply(transcript.AssistantOutput{Message: m})
+	}
+	blob0, _ := tp.State()
+	if err := w.Restore(blob0); err != nil {
+		t.Fatalf("seed restore: %v", err)
 	}
 
 	blob, err := w.Snapshot()
@@ -91,7 +97,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	gotMsgs, wantMsgs := fresh.Transcript.Render(), w.Transcript.Render()
+	gotMsgs, wantMsgs := fresh.Messages(), w.Messages()
 	if len(gotMsgs) != len(wantMsgs) {
 		t.Fatalf("restored %d messages, want %d", len(gotMsgs), len(wantMsgs))
 	}
@@ -134,7 +140,7 @@ func TestSnapshotEmptyMessages(t *testing.T) {
 	if err := fresh.Restore(blob); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if len(fresh.Transcript.Render()) != 0 {
-		t.Fatalf("restored %d messages, want 0", len(fresh.Transcript.Render()))
+	if len(fresh.Messages()) != 0 {
+		t.Fatalf("restored %d messages, want 0", len(fresh.Messages()))
 	}
 }

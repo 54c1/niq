@@ -98,7 +98,7 @@ func (w *BaseReasonWorker) updatePlaceholderFromEvent(evt event.Event) {
 		return
 	}
 	text, isErr := resultOutcome(evt)
-	w.Transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
+	w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
 }
 
 // appendLateResult translates a late-arriving result on a parked call into a
@@ -118,6 +118,6 @@ func (w *BaseReasonWorker) appendLateResult(parked *ToolCall, evt event.Event) {
 	}
 
 	if text, _ := resultOutcome(evt); text != "" {
-		w.Transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
+		w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
 	}
 }

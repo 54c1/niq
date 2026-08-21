@@ -128,7 +128,7 @@ func (w *BaseReasonWorker) handleAbort(_ event.Event) {
 
 	// Record the abort in the conversation transcript so the LLM
 	// knows what happened when the next round starts.
-	w.Transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
+	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: fmt.Sprintf("[system] reasoning was aborted. %d tool call(s) parked.", len(tcs))}},
@@ -235,7 +235,7 @@ func (w *BaseReasonWorker) recallToolCalls(tcs []*ToolCall) {
 // is idle - no in-flight reasoning and no pending tool calls. Does not
 // interrupt or park anything. This is the least intrusive input mode (level 1).
 func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
-	w.Transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 
 	if !w.isReasoning && w.toolCallTracker.Resolved() {
 		w.needReason = true
@@ -247,7 +247,7 @@ func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
 // here. This is the moderate input mode (level 2) — it does not interrupt
 // an in-flight reasoning call, but ensures the next round responds promptly.
 func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
-	w.Transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 	w.immediateReasoningCause = cause
 	w.needReason = true
 }
@@ -257,7 +257,7 @@ func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause)
 // starts. This is the strongest input mode (level 3) — it interrupts the
 // current LLM call so the new input is handled immediately.
 func (w *BaseReasonWorker) interruptInput(msgs []llm.Message, cause PreemptCause) {
-	w.Transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 	w.interruptReason = cause
 	if w.cancelReason != nil {
 		w.cancelReason()
@@ -282,7 +282,7 @@ func (w *BaseReasonWorker) captureTraceID(evt event.Event) {
 func (w *BaseReasonWorker) parkPending(cause PreemptCause) []*ToolCall {
 	tcs := w.toolCallTracker.ParkAll(cause)
 	for _, rc := range tcs {
-		w.Transcript.Apply(transcript.ToolParked{
+		w.transcript.Apply(transcript.ToolParked{
 			CallID: rc.CallID,
 			Name:   rc.Name,
 			Cause:  string(cause),
@@ -301,7 +301,7 @@ func (w *BaseReasonWorker) cancelTimeout() {
 	}
 	// Look up the timer worker ID from the set_tool_timeout tool definition.
 	targetID := ""
-	if t, ok := w.Tools["timer.set_tool_timeout"]; ok {
+	if t, ok := w.tools["timer.set_tool_timeout"]; ok {
 		targetID = t.Provider
 	}
 

@@ -20,63 +20,115 @@ import (
 )
 
 func (w *BaseReasonWorker) allTools() []worker.Tool {
-	tools := make([]worker.Tool, 0, len(w.Tools))
-	for _, t := range w.Tools {
+	tools := make([]worker.Tool, 0, len(w.tools))
+	for _, t := range w.tools {
 		tools = append(tools, t)
 	}
 	return tools
 }
 
-// initBuiltinTools adds tools natively handled by this worker (e.g.
-// send_message, list_workers) to w.Tools with Provider set to w.ID()
-// so they route back to self via the bus.
+// ToolProvider supplies the tools a reason-family worker handles itself
+// (built-ins plus anything its owner adds). It owns both halves of a tool:
+// how it is described to the LLM (ToolDefinitions) and how a call is served
+// (HandleToolCall). The embedding worker composes its own provider; nil in
+// Config uses the default BuiltinTools.
+type ToolProvider interface {
+	// ToolDefinitions returns the tools this provider can handle, as the table
+	// the LLM sees (send_message, list_workers, context.compress, ...).
+	ToolDefinitions() []worker.Tool
+	// HandleToolCall serves one tool.requested targeting this worker.
+	HandleToolCall(tc worker.ToolCall)
+}
+
+// BuiltinTools is the default provider: the four domain-agnostic tools any
+// reason-family worker gets. It holds the worker pointer it serves on.
+type BuiltinTools struct {
+	w *BaseReasonWorker
+}
+
+// builtinDefinitions are the schemas of the four default tools.
+var builtinDefinitions = []worker.Tool{
+	{
+		Name:        "send_message",
+		Description: "Send a message to a specific worker on the bus.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": map[string]any{"type": "string", "description": "Target worker ID"},
+				"text":   map[string]any{"type": "string", "description": "Message text"},
+			},
+			"required": []any{"target", "text"},
+		},
+	},
+	{
+		Name:        "list_workers",
+		Description: "List all available workers and their capabilities. Returns tools and events published by each worker. Call this first, then set a 2-second timer, then call again to get the latest worker information after re-discovery.",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	},
+	{
+		Name:        "context.compress",
+		Description: "Compact your own conversation history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"directive": map[string]any{"type": "string",
+					"description": "Optional focus for the summary, e.g. what must be preserved."},
+			},
+		},
+	},
+	{
+		Name:        "context.rotate",
+		Description: "Rotate your context: summarize the current transcript as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"carry": map[string]any{"type": "string",
+					"description": "Optional instruction for what to carry into the digest (conclusions, open items, references)."},
+			},
+		},
+	},
+}
+
+// NewBuiltinTools builds the default provider bound to a worker.
+func NewBuiltinTools(w *BaseReasonWorker) *BuiltinTools {
+	return &BuiltinTools{w: w}
+}
+
+// ToolDefinitions implements ToolProvider for the four default tools, tagged
+// with this worker's ID so they route back to it.
+func (t *BuiltinTools) ToolDefinitions() []worker.Tool {
+	out := make([]worker.Tool, len(builtinDefinitions))
+	for i, td := range builtinDefinitions {
+		td.Provider = t.w.ID()
+		out[i] = td
+	}
+	return out
+}
+
+// HandleToolCall implements ToolProvider, dispatching the four defaults.
+func (t *BuiltinTools) HandleToolCall(tc worker.ToolCall) {
+	switch tc.Name {
+	case "send_message":
+		t.w.handleSendMessage(tc.CallID, tc.Name, tc.CallerID, tc.Args)
+	case "list_workers":
+		t.w.handleListWorkers(tc.CallID, tc.Name, tc.CallerID, tc.Args)
+	case "context.compress":
+		t.w.handleCompactTool(tc.CallID, tc.Name, tc.CallerID, tc.Args, "compress")
+	case "context.rotate":
+		t.w.handleCompactTool(tc.CallID, tc.Name, tc.CallerID, tc.Args, "rotate")
+	default:
+		t.w.replyUnknownTool(tc)
+	}
+}
+
+// initBuiltinTools installs the tool provider's definitions into w.tools so
+// the LLM sees them and calls route back here.
 func (w *BaseReasonWorker) initBuiltinTools() {
-	for _, t := range []worker.Tool{
-		{
-			Name:        "send_message",
-			Description: "Send a message to a specific worker on the bus.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"target": map[string]any{"type": "string", "description": "Target worker ID"},
-					"text":   map[string]any{"type": "string", "description": "Message text"},
-				},
-				"required": []any{"target", "text"},
-			},
-		},
-		{
-			Name:        "list_workers",
-			Description: "List all available workers and their capabilities. Returns tools and events published by each worker. Call this first, then set a 2-second timer, then call again to get the latest worker information after re-discovery.",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		{
-			Name:        "context.compress",
-			Description: "Compact your own conversation history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"directive": map[string]any{"type": "string",
-						"description": "Optional focus for the summary, e.g. what must be preserved."},
-				},
-			},
-		},
-		{
-			Name:        "context.rotate",
-			Description: "Rotate your context: summarize the current transcript as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"carry": map[string]any{"type": "string",
-						"description": "Optional instruction for what to carry into the digest (conclusions, open items, references)."},
-				},
-			},
-		},
-	} {
-		t.Provider = w.ID()
-		w.Tools[t.Name] = t
+	for _, t := range w.toolProvider.ToolDefinitions() {
+		w.tools[t.Name] = t
 	}
 }
 
@@ -98,7 +150,7 @@ func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 					continue
 				}
 				prefixed := workerID + "." + name
-				w.Tools[prefixed] = worker.Tool{
+				w.tools[prefixed] = worker.Tool{
 					Name:        prefixed,
 					Description: desc,
 					Parameters:  params,
@@ -114,7 +166,7 @@ func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 	if err == nil {
 		var eventsRaw []EventPublish
 		if err := json.Unmarshal(b, &eventsRaw); err == nil && len(eventsRaw) > 0 {
-			w.PublishMap[workerID] = eventsRaw
+			w.publishMap[workerID] = eventsRaw
 			log.Printf("[reason %s] received %d event(s) from %s", w.ID(), len(eventsRaw), workerID)
 		}
 	}
@@ -124,39 +176,25 @@ func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 func (w *BaseReasonWorker) handleWorkerGone(evt event.Event) {
 	workerID, _ := evt.Payload["worker_id"].(string)
 
-	for name, tool := range w.Tools {
+	for name, tool := range w.tools {
 		if tool.Provider == workerID {
-			delete(w.Tools, name)
+			delete(w.tools, name)
 		}
 	}
-	delete(w.PublishMap, workerID)
+	delete(w.publishMap, workerID)
 	log.Printf("[reason %s] removed tools and events from %s", w.ID(), workerID)
 }
 
-// handleToolRequest processes tool.requested events targeting this worker.
+// handleToolRequest processes a tool.requested event targeting this worker by
+// dispatching to its tool provider.
 func (w *BaseReasonWorker) handleToolRequest(evt event.Event) {
-	callID, _ := evt.Payload["call_id"].(string)
-	toolName, _ := evt.Payload["name"].(string)
-	callerID := evt.WorkerId
+	tc := worker.ParseToolCall(evt)
+	w.toolProvider.HandleToolCall(tc)
+}
 
-	args, _ := evt.Payload["arguments"].(map[string]any)
-
-	switch toolName {
-	case "send_message":
-		w.handleSendMessage(callID, toolName, callerID, args)
-	case "list_workers":
-		w.handleListWorkers(callID, toolName, callerID, args)
-	case "context.compress":
-		w.handleCompactTool(callID, toolName, callerID, args, "compress")
-	case "context.rotate":
-		w.handleCompactTool(callID, toolName, callerID, args, "rotate")
-	default:
-		evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
-			"call_id": callID, "name": toolName,
-			"error": fmt.Sprintf("unknown tool: %s", toolName),
-		})
-		_ = w.Channel.Send(context.Background(), evt, callerID)
-	}
+// replyUnknownTool replies to a tool call no provider handled.
+func (w *BaseReasonWorker) replyUnknownTool(tc worker.ToolCall) {
+	w.ReplyFailed(tc.CallerID, tc.CallID, tc.Name, "Unknown tool: "+tc.Name, tc.TraceID)
 }
 
 func (w *BaseReasonWorker) handleSendMessage(callID, toolName, callerID string, args map[string]any) {
@@ -198,12 +236,12 @@ func (w *BaseReasonWorker) handleListWorkers(callID, toolName, callerID string, 
 	providers := make(map[string]*workerInfo)
 
 	// Collect tools grouped by provider.
-	for _, tool := range w.Tools {
+	for _, tool := range w.tools {
 		info, ok := providers[tool.Provider]
 		if !ok {
 			info = &workerInfo{
 				WorkerID:  tool.Provider,
-				Publishes: w.PublishMap[tool.Provider],
+				Publishes: w.publishMap[tool.Provider],
 			}
 			providers[tool.Provider] = info
 		}
@@ -211,7 +249,7 @@ func (w *BaseReasonWorker) handleListWorkers(callID, toolName, callerID string, 
 	}
 
 	// Collect providers that only publish events (no tools).
-	for provider, events := range w.PublishMap {
+	for provider, events := range w.publishMap {
 		if _, ok := providers[provider]; !ok {
 			providers[provider] = &workerInfo{
 				WorkerID:  provider,

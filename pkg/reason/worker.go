@@ -65,6 +65,12 @@ type Config struct {
 	Provider        llm.LLMProvider
 	ReasoningEffort *string
 
+	// BuiltinTools is the tool provider for this worker. nil uses the default
+	// BuiltinTools (send_message, list_workers, context.compress,
+	// context.rotate). To customize, supply a provider that lists every tool
+	// you want — including the defaults if you want to keep them.
+	BuiltinTools ToolProvider
+
 	ContextWindow    int
 	BudgetSoft       float64
 	BudgetHard       float64
@@ -97,10 +103,10 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 
 	w := &BaseReasonWorker{
 		BaseWorker:               worker.NewBaseWorker(cfg.ID, cfg.Subscriptions, cfg.Bus),
-		LLMProvider:              cfg.Provider,
-		Transcript:               cfg.Transcript,
-		Tools:                    make(map[string]worker.Tool),
-		PublishMap:               make(map[string][]EventPublish),
+		llmProvider:              cfg.Provider,
+		transcript:               cfg.Transcript,
+		tools:                    make(map[string]worker.Tool),
+		publishMap:               make(map[string][]EventPublish),
 		eventConverters:          cfg.EventConverters,
 		programs:                 cfg.Programs,
 		toolNameMap:              make(map[string]string),
@@ -113,12 +119,19 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		reasoningEffort:          cfg.ReasoningEffort,
 	}
 	if len(cfg.SeedMessages) > 0 {
-		w.Transcript.Apply(transcript.InputEvent{Messages: cfg.SeedMessages})
+		w.transcript.Apply(transcript.InputEvent{Messages: cfg.SeedMessages})
 	}
 
-	// Install the built-in tools (send_message, list_workers, context.compress,
-	// context.rotate). An embedding worker can add its own to
-	// w.Tools before Start.
+	// Peer the tool provider (default BuiltinTools if none supplied). Custom
+	// providers get a pointer to this worker so they can serve it.
+	if cfg.BuiltinTools == nil {
+		w.toolProvider = NewBuiltinTools(w)
+	} else {
+		w.toolProvider = cfg.BuiltinTools
+	}
+
+	// Install the provider's tools into w.tools (see initBuiltinTools in
+	// tools.go) — the schemas the LLM sees and the dispatch target.
 	w.initBuiltinTools()
 
 	return w
@@ -169,7 +182,7 @@ func (w *BaseReasonWorker) Stop() error {
 func (w *BaseReasonWorker) Snapshot() ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.Transcript.State()
+	return w.transcript.State()
 }
 
 // Restore rehydrates the worker from a Snapshot blob, restoring the reasoning
@@ -177,7 +190,15 @@ func (w *BaseReasonWorker) Snapshot() ([]byte, error) {
 func (w *BaseReasonWorker) Restore(state []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.Transcript.Restore(state)
+	return w.transcript.Restore(state)
+}
+
+// Messages returns the current working transcript for reading (e.g. the
+// embedding worker observing its own state). Callers must not mutate it.
+func (w *BaseReasonWorker) Messages() []llm.Message {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.transcript.Render()
 }
 
 // BaseReasonWorker is the reasoning mechanism shared by all reason-family
@@ -188,16 +209,18 @@ type BaseReasonWorker struct {
 	worker.BaseWorker
 	mu sync.Mutex
 
-	LLMProvider     llm.LLMProvider
-	Transcript      transcript.Transcript
-	Tools           map[string]worker.Tool    // tools from the bus + built-ins; read by dispatch
-	PublishMap      map[string][]EventPublish // worker ID -> published events
+	llmProvider     llm.LLMProvider
+	transcript      transcript.Transcript
+	tools           map[string]worker.Tool // tools from the bus + built-ins; read by dispatch
+	programs        []program.Program
+	publishMap      map[string][]EventPublish // worker ID -> published events
 	toolNameMap     map[string]string         // maps sanitized name -> original tool name
 	toolCallTracker *ToolCallTracker
+
+	toolProvider    ToolProvider
 	eventConverters []EventConverter
 
 	reasoningEffort *string
-	programs        []program.Program
 
 	started                 bool
 	needReason              bool
