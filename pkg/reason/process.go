@@ -319,7 +319,7 @@ func DefaultConverter(evt event.Event) []llm.Message {
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{{
 				Type: llm.ContentText,
-				Text: fmt.Sprintf("%s\n\n[Event: %s from %s]\n%s", text, evt.Type, evt.WorkerId, payloadStr),
+				Text: fmt.Sprintf("%s\n\n[Event: %s from %s]", text, evt.Type, evt.WorkerId),
 			}},
 		}}
 	}

@@ -12,8 +12,9 @@ import (
 // Tests for process.go's event-to-input translation: DefaultConverter,
 // resultOutcome, and convertEvent's source-filtered converter selection.
 // (EventPattern.Matches semantics are tested in core/event.)
+
 // TestDefaultConverterText verifies a payload with a "text" field produces a
-// user message leading with that text.
+// user message leading with that text (without repeating the payload).
 func TestDefaultConverterText(t *testing.T) {
 	evt := event.New(event.TypeWorkerInput, "hiw", map[string]any{"text": "hello"})
 	msgs := DefaultConverter(evt)
@@ -27,7 +28,7 @@ func TestDefaultConverterText(t *testing.T) {
 	if len(m.Content) != 1 || m.Content[0].Type != llm.ContentText {
 		t.Fatalf("expected one text block, got %+v", m.Content)
 	}
-	if m.Content[0].Text != "hello\n\n[Event: worker.input from hiw]\n{\"text\":\"hello\"}" {
+	if m.Content[0].Text != "hello\n\n[Event: worker.input from hiw]" {
 		t.Fatalf("unexpected text: %q", m.Content[0].Text)
 	}
 }
