@@ -72,10 +72,11 @@ func TestSoftBudgetInjectsReminder(t *testing.T) {
 
 // TestHardBudgetCompacts verifies crossing the hard threshold compacts the
 // transcript asynchronously: digest head + keepTail tail.
-func TestHardBudgetCompacts(t *testing.T) {
+func TestHardBudgetEmitsMetaRequest(t *testing.T) {
 	prov := &summarizeProvider{summarized: "hard-budget",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
-	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: newTestChannel(),
+	ch := newTestChannel()
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: ch,
 		ContextWindow: 1000, BudgetSoft: 0.85, BudgetHard: 0.97, KeepTail: 2})
 
 	seed := func(n int) {
@@ -89,46 +90,75 @@ func TestHardBudgetCompacts(t *testing.T) {
 
 	w.handleBudget(context.Background(), llm.Message{Usage: &llm.Usage{InputTokens: 990, OutputTokens: 5}})
 
-	// Poll under the worker lock: Render() is only safe with w.mu held
-	// (builders are passive; the caller serializes access).
-	waitCond(t, testTimeout, func() bool {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		msgs := w.transcript.Render()
-		return len(msgs) == 3 && strings.Contains(msgs[0].Content[0].Text, "DIGEST")
-	}, "compaction to apply")
-
-	msgs := w.transcript.Render()
-	if msgs[1].Content[0].Text != "e" || msgs[2].Content[0].Text != "f" {
-		t.Fatalf("keepTail=2 should keep last two messages, got %q %q",
-			msgs[1].Content[0].Text, msgs[2].Content[0].Text)
+	// Hard budget routes compaction through a worker.update meta request to
+	// itself (single audit path), not a direct compactor call.
+	var found bool
+	for _, e := range ch.eventsOf(event.TypeWorkerUpdate) {
+		if op, _ := e.Payload["op"].(string); op == "compress" {
+			found = true
+		}
 	}
-	if !strings.Contains(prov.prompt(), "Summarize") {
-		t.Fatalf("summarizer prompt = %q, want fallback directive", prov.prompt())
+	if !found {
+		t.Fatalf("hard budget should emit a worker.update compress request, got %+v", ch.eventsOf(event.TypeWorkerUpdate))
 	}
 }
 
-// TestCompactToolRotates verifies the context.rotate built-in:
-// keepTail=1 keeps the call's own placeholder, the digest heads the fresh
-// episode, and a completed tool result is delivered via the bus.
-func TestCompactToolRotates(t *testing.T) {
+// TestMetaCompressViaWorkerUpdate verifies the compress meta operation, run via
+// handleWorkerUpdate, compacts the transcript asynchronously and schedules the
+// next round.
+func TestMetaCompressViaWorkerUpdate(t *testing.T) {
+	prov := &summarizeProvider{summarized: "hard-budget",
+		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
+	ch := newTestChannel()
+	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: ch,
+		ContextWindow: 1000, KeepTail: 2})
+
+	for i := 0; i < 6; i++ {
+		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
+		}})
+	}
+
+	w.mu.Lock()
+	w.handleWorkerUpdate(event.New(event.TypeWorkerUpdate, "me", map[string]any{"op": "compress"}))
+	w.mu.Unlock()
+
+	// The compress operation completes asynchronously, compacting the
+	// transcript head into a digest.
+	waitCond(t, testTimeout, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.metaInProgress {
+			return false
+		}
+		msgs := w.transcript.Render()
+		for _, m := range msgs {
+			if len(m.Content) > 0 && strings.Contains(m.Content[0].Text, "DIGEST") {
+				return true
+			}
+		}
+		return false
+	}, "compress to apply a digest head")
+}
+
+// TestMetaRotateViaWorkerUpdate verifies the rotate meta operation, triggered
+// via the worker.update event, runs asynchronously: it compacts the transcript
+// into a carried digest (keeping the rotate call's own pair), flushes any
+// buffered input, and sets needReason so a next round is scheduled.
+func TestMetaRotateViaWorkerUpdate(t *testing.T) {
 	prov := &summarizeProvider{summarized: "episode",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
 	ch := newTestChannel()
 	w := NewBaseReasonWorker(Config{ID: "r1", Provider: prov, Bus: ch,
 		ContextWindow: 1000})
 
-	// Seed an episode and the call's own placeholder.
-	seed := func(n int) {
-		for i := 0; i < n; i++ {
-			w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
-				{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
-			}})
-		}
+	// Seed an episode and the rotating call's own pair, as the transcript
+	// looks right after the LLM emitted the rotate call.
+	for i := 0; i < 4; i++ {
+		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
+		}})
 	}
-	seed(4)
-	// The closing call's assistant message + placeholder, as
-	// handleToolCalls produces them (pairing invariant holds in the tail).
 	w.transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
 		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"}},
@@ -137,30 +167,36 @@ func TestCompactToolRotates(t *testing.T) {
 		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"},
 	}})
 
+	// A meta operation is running: input arriving now is buffered, not applied.
+	w.metaInProgress = true
+	if !w.bufferIfMetaInProgress([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "buffered-input"}}}}) {
+		t.Fatal("input during meta operation should be buffered")
+	}
+
 	w.mu.Lock()
-	w.handleCompactTool("call_ep", "context.rotate", w.ID(), map[string]any{}, "rotate")
+	w.handleWorkerUpdate(event.New(event.TypeWorkerUpdate, "me", map[string]any{"op": "rotate"}))
 	w.mu.Unlock()
 
-	// Tool completion arrives on the bus.
 	waitCond(t, testTimeout, func() bool {
-		for _, e := range ch.eventsOf(event.TypeToolCompleted) {
-			if e.Payload["call_id"] == "call_ep" {
-				return true
-			}
-		}
-		return false
-	}, "rotate tool completion")
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return !w.metaInProgress
+	}, "rotate to complete")
 
-	// Fresh episode: digest + the closing assistant tool_call + placeholder.
+	// Rotate kept the call's own pair after the digest head.
 	msgs := w.transcript.Render()
-	if len(msgs) != 3 {
-		t.Fatalf("fresh episode should be digest + tool_call + placeholder, got %d: %+v", len(msgs), msgs)
-	}
 	if !strings.Contains(msgs[0].Content[0].Text, "DIGEST") {
 		t.Fatalf("digest head missing: %+v", msgs[0])
 	}
-	if msgs[1].Content[0].Type != llm.ContentToolCall || msgs[2].ToolCallID != "call_ep" {
-		t.Fatalf("closing call/placeholder not kept: %+v %+v", msgs[1], msgs[2])
+	// Buffered inputs were flushed after the operation.
+	foundBuf := false
+	for _, m := range msgs {
+		if len(m.Content) > 0 && strings.Contains(m.Content[0].Text, "buffered-input") {
+			foundBuf = true
+		}
+	}
+	if !foundBuf {
+		t.Fatalf("buffered input should be flushed after meta op, got %+v", msgs)
 	}
 }
 

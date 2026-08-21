@@ -46,6 +46,20 @@ type BuiltinTools struct {
 	w *BaseReasonWorker
 }
 
+// metaOpOf maps a meta tool's bare name to its worker.update op: the tool is
+// the LLM-facing surface (context.compress), the op is the event payload's
+// operation name (compress).
+func metaOpOf(toolName string) string {
+	switch toolName {
+	case "context_compress":
+		return "compress"
+	case "context_rotate":
+		return "rotate"
+	default:
+		return toolName
+	}
+}
+
 // builtinDefinitions are the schemas of the four default tools.
 var builtinDefinitions = []worker.Tool{
 	{
@@ -70,7 +84,7 @@ var builtinDefinitions = []worker.Tool{
 	},
 	{
 		Name:        "context.compress",
-		Description: "Compact your own context history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full.",
+		Description: "Compact your own context history: older messages are replaced by a summary, the most recent messages are kept. Call this when the system reminds you about context budget, or when earlier history is no longer needed in full. This operation edits your own context; issue it alone (other tool calls in the same turn will be rejected while it runs).",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -78,10 +92,11 @@ var builtinDefinitions = []worker.Tool{
 					"description": "Optional focus for the summary, e.g. what must be preserved."},
 			},
 		},
+		IsMetaTool: true,
 	},
 	{
 		Name:        "context.rotate",
-		Description: "Rotate your context: summarize the current transcript as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic.",
+		Description: "Rotate your context: summarize the current transcript as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic. This operation edits your own context; issue it alone (other tool calls in the same turn will be rejected while it runs).",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -89,6 +104,7 @@ var builtinDefinitions = []worker.Tool{
 					"description": "Optional instruction for what to carry into the digest (conclusions, open items, references)."},
 			},
 		},
+		IsMetaTool: true,
 	},
 }
 
@@ -109,16 +125,18 @@ func (t *BuiltinTools) ToolDefinitions() []worker.Tool {
 }
 
 // HandleToolCall implements ToolProvider, dispatching the four defaults.
+// compress/rotate are meta operations: they edit this worker's own state and
+// are reached via worker.update (from the LLM's tool call converted by
+// handleToolCalls, or from external requesters), not via tool.requested.
 func (t *BuiltinTools) HandleToolCall(tc worker.ToolCall) {
 	switch tc.Name {
 	case "send_message":
 		t.w.handleSendMessage(tc.CallID, tc.Name, tc.CallerID, tc.Args)
 	case "list_workers":
 		t.w.handleListWorkers(tc.CallID, tc.Name, tc.CallerID, tc.Args)
-	case "context.compress":
-		t.w.handleCompactTool(tc.CallID, tc.Name, tc.CallerID, tc.Args, "compress")
-	case "context.rotate":
-		t.w.handleCompactTool(tc.CallID, tc.Name, tc.CallerID, tc.Args, "rotate")
+	case "context.compress", "context.rotate":
+		t.w.ReplyRejected(tc.CallerID, tc.CallID, tc.Name,
+			"meta operation: send a worker.update event to this worker instead of calling this as a tool", tc.TraceID)
 	default:
 		t.w.replyUnknownTool(tc)
 	}
@@ -323,57 +341,6 @@ func (w *BaseReasonWorker) sendFail(callID, toolName, callerID, errMsg string) {
 	})
 	evt.TraceID = w.currentTraceID
 	_ = w.Channel.Send(context.Background(), evt, callerID)
-}
-
-// handleCompactTool serves compress / context.rotate: both run the
-// compaction asynchronously on their own goroutine and reply via the bus when
-// done. compress delegates to the Compactor's Compact; rotate, being a
-// DefaultCompactor extension, is reached by type assertion (this worker
-// declares the rotate tool, so its compactor must provide it).
-func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
-	// Capture the trace under the caller's lock; the goroutine runs unlocked.
-	traceID := w.currentTraceID
-
-	go func() {
-		directive := w.compactDirective()
-		if extra, _ := args["directive"].(string); kind == "compress" && extra != "" {
-			directive = directive + "\nCaller focus: " + extra
-		}
-		if carry, _ := args["carry"].(string); kind == "rotate" && carry != "" {
-			directive = directive + "\nCarry into the new episode: " + carry
-		}
-
-		var err error
-		w.mu.Lock()
-		switch kind {
-		case "rotate":
-			if c, ok := w.compactor.(*DefaultCompactor); ok {
-				err = c.Rotate(context.Background(), w.transcript, directive)
-			} else {
-				err = fmt.Errorf("context.rotate tool declared but compactor has no Rotate")
-			}
-		default:
-			err = w.compactor.Compact(context.Background(), w.transcript, directive)
-		}
-		w.mu.Unlock()
-
-		evt := event.New(event.TypeToolCompleted, w.ID(), map[string]any{
-			"call_id": callID, "name": toolName,
-			"result": compactResultText(kind, err),
-		})
-		evt.TraceID = traceID
-		_ = w.Channel.Send(context.Background(), evt, callerID)
-	}()
-}
-
-func compactResultText(kind string, err error) string {
-	if err != nil {
-		return fmt.Sprintf("compaction failed: %v", err)
-	}
-	if kind == "rotate" {
-		return "episode rotated: history compacted into a carried digest; fresh context started"
-	}
-	return "history compacted: older messages replaced by a digest; recent messages kept"
 }
 
 // toolDefs builds the LLM tool definitions from the known tools, rebuilding the

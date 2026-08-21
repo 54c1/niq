@@ -37,16 +37,12 @@ func (w *BaseReasonWorker) handleBudget(ctx context.Context, msg llm.Message) {
 	ratio := float64(w.lastUsageTokens) / float64(w.contextWindow)
 	switch {
 	case ratio >= w.budgetHard:
-		// Direct exit: compact without waiting for the LLM, on our own
-		// goroutine so the summarize call (seconds) does not hold the loop.
+		// Direct exit: compact without waiting for the LLM. Route through
+		// worker.update like any other meta operation (single audit path).
 		log.Printf("[reason %s] context hard budget %.0f%% (%d/%d tokens) - compacting",
 			w.ID(), ratio*100, w.lastUsageTokens, w.contextWindow)
 		w.budgetReminded = false
-		go func() {
-			w.mu.Lock()
-			defer w.mu.Unlock()
-			_ = w.compactor.Compact(ctx, w.transcript, w.compactDirective())
-		}()
+		w.emitMetaRequest(ctx, "compress", nil)
 	case ratio >= w.budgetSoft && !w.budgetReminded:
 		// Guided exit: one reminder per crossing; the LLM decides.
 		w.budgetReminded = true

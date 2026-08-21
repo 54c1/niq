@@ -5,6 +5,7 @@ package reason
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	llm "github.com/54c1/niq/core/llm"
+	"github.com/54c1/niq/core/worker"
 	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
@@ -375,8 +377,80 @@ func (w *BaseReasonWorker) finishReasoning(ctx context.Context, traceID string, 
 func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.ContentBlock, traceID string) {
 	busCalls := toolCalls
 
+	// Meta tools (IsMetaTool) directly edit this worker's own state and bypass
+	// the tool lifecycle: no placeholder, no tracker, no dispatch. If any call
+	// in this batch is a meta tool, the batch is handled by the meta path:
+	// non-meta calls are rejected (pairing is preserved via their
+	// placeholders), and the meta tool emits a worker.update event to self,
+	// which reason processes asynchronously.
+	var metaCall *llm.ContentBlock
+	var metaTool *worker.Tool
+	for i := range busCalls {
+		if t, ok := w.tools[busCalls[i].ToolName]; ok && t.IsMetaTool {
+			metaCall = &busCalls[i]
+			metaTool = &t
+			break
+		}
+	}
+	if metaCall != nil {
+		// If a newer input already requested reasoning (needReason set), the
+		// meta operation yields: it has not started, so it is simply dropped -
+		// the next round decides whether to issue it again. This mirrors a
+		// tool call being parked on preemption, minus the dispatch.
+		if w.needReason {
+			log.Printf("[reason %s] meta tool %s yielded to pending input", w.ID(), metaCall.ToolName)
+			for i := range busCalls {
+				w.transcript.Apply(transcript.ToolResult{
+					CallID: busCalls[i].ToolCallID,
+					Name:   busCalls[i].ToolName,
+					Text:   "Rejected: a newer input arrived; this call was dropped. Re-issue it in the next round if still needed.",
+					IsErr:  true,
+				})
+			}
+			w.isReasoning = false
+			w.mu.Unlock()
+			w.tryReason(ctx)
+			return
+		}
+
+		// Insert placeholders only for the non-meta calls, then reject them:
+		// while the meta operation runs, they cannot proceed, and after it the
+		// next reasoning round will issue fresh calls anyway.
+		var others []llm.ContentBlock
+		for i := range busCalls {
+			if &busCalls[i] != metaCall {
+				others = append(others, busCalls[i])
+			}
+		}
+		if len(others) > 0 {
+			w.transcript.Apply(transcript.ToolPlaceholders{Calls: others})
+			for i := range others {
+				w.transcript.Apply(transcript.ToolResult{
+					CallID: others[i].ToolCallID,
+					Name:   others[i].ToolName,
+					Text:   "Rejected: a context meta operation is running; issue this call again after it completes.",
+					IsErr:  true,
+				})
+			}
+		}
+
+		// The meta call itself leaves no placeholder (its execution rewrites the
+		// transcript); emit worker.update to self, routed via the bus for audit.
+		var argsMap map[string]any
+		if metaCall.ToolArguments != "" {
+			json.Unmarshal([]byte(metaCall.ToolArguments), &argsMap)
+		}
+		w.emitMetaRequest(ctx, metaOpOf(metaTool.Name), argsMap)
+
+		w.isReasoning = false
+		w.mu.Unlock()
+		// No tryReason here: the next round is scheduled when the meta
+		// operation completes (and buffered input is flushed).
+		return
+	}
+
 	// Record the current round's single timeout timer, if any. At most one
-	// is meaningful — the first timer to fire parks all pending tools; a
+	// is meaningful - the first timer to fire parks all pending tools; a
 	// second set_tool_timeout in the same round is treated as a misplaced
 	// config and overwrites the first (leak accepted). Only record if a
 	// provider actually offers the timeout tool.

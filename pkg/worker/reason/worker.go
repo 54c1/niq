@@ -69,7 +69,7 @@ var DefaultConverter = reasonBase.DefaultConverter
 // NewWorker creates a generic reason Worker from the given configuration.
 func NewWorker(cfg Config) *Worker {
 	// Built-in subscriptions plus the custom converters' patterns.
-	subs := make([]event.EventPattern, 0, len(cfg.EventConverters)+11)
+	subs := make([]event.EventPattern, 0, len(cfg.EventConverters)+12)
 	for _, h := range cfg.EventConverters {
 		subs = append(subs, h.Pattern)
 	}
@@ -83,6 +83,7 @@ func NewWorker(cfg Config) *Worker {
 		event.NewPattern(event.TypeWorkerDiscover),
 		event.NewPattern(event.TypeWorkerInput),
 		event.NewPattern(event.TypeWorkerAbort),
+		event.NewPattern(event.TypeWorkerUpdate),
 		event.NewPattern("timer.timeout"),
 		event.NewPattern("timer.reminder"),
 	)
