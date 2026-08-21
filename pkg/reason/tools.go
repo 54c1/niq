@@ -27,11 +27,11 @@ func (w *BaseReasonWorker) allTools() []worker.Tool {
 	return tools
 }
 
-// ToolProvider supplies the tools a reason-family worker handles itself
-// (built-ins plus anything its owner adds). It owns both halves of a tool:
-// how it is described to the LLM (ToolDefinitions) and how a call is served
-// (HandleToolCall). The embedding worker composes its own provider; nil in
-// Config uses the default BuiltinTools.
+// ToolProvider supplies the tools this worker both calls and answers itself
+// (routed back to the same worker): the LLM-facing definitions it can invoke
+// and how calls are served. The embedding worker composes its own; nil uses
+// default BuiltinTools. Tools backed by other workers are discovered
+// separately.
 type ToolProvider interface {
 	// ToolDefinitions returns the tools this provider can handle, as the table
 	// the LLM sees (send_message, list_workers, context.compress, ...).
