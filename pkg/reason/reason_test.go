@@ -14,7 +14,7 @@ import (
 // tools, snapshots messages, and builds a completion request with the worker's
 // ID instruction and tool set.
 func TestPrepareReasoningBuildsRequest(t *testing.T) {
-	w := newBaseForTest(nil, nil)
+	w := newTestWorker(nil, nil)
 	// Seed a trace and a pending tool call that should be parked at reasoning start.
 	w.mu.Lock()
 	w.currentTraceID = "trace1"
@@ -44,7 +44,7 @@ func TestPrepareReasoningBuildsRequest(t *testing.T) {
 // tool.requested is sent to each provider.
 func TestHandleToolCallsDispatches(t *testing.T) {
 	ch := newTestChannel()
-	w := newBaseForTest(nil, ch)
+	w := newTestWorker(nil, ch)
 	w.tools["workspace.bash"] = worker.Tool{Name: "workspace.bash", Provider: "workspace"}
 
 	calls := []llm.ContentBlock{
@@ -70,7 +70,7 @@ func TestHandleToolCallsDispatches(t *testing.T) {
 // (placeholder replaced) and NOT dispatched.
 func TestHandleToolCallsUnavailable(t *testing.T) {
 	ch := newTestChannel()
-	w := newBaseForTest(nil, ch)
+	w := newTestWorker(nil, ch)
 	// No workerTools registered — every call is unavailable.
 
 	calls := []llm.ContentBlock{
@@ -97,7 +97,7 @@ func TestHandleToolCallsUnavailable(t *testing.T) {
 // TestConsumeStreamSummarizesText verifies consumeStream accumulates text
 // deltas and returns normally when the stream ends.
 func TestConsumeStreamSummarizesText(t *testing.T) {
-	w := newBaseForTest(nil, nil)
+	w := newTestWorker(nil, nil)
 	es := llm.NewEventStream()
 	go func() {
 		es.Push(llm.EventTextStart{})
@@ -146,7 +146,7 @@ func TestRetrySucceeds(t *testing.T) {
 // TestFinalMessageReturns verifies finalMessage returns the stream's final
 // message promptly (the 5s hang-guard is not exercised in the happy path).
 func TestFinalMessageReturns(t *testing.T) {
-	w := newBaseForTest(nil, nil)
+	w := newTestWorker(nil, nil)
 	es := llm.NewEventStream()
 	go func() {
 		es.End(llm.Message{Role: llm.RoleAssistant, StopReason: "stop"})

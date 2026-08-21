@@ -1,3 +1,7 @@
+// Shared test facilities for pkg/reason: a mock bus channel (testChannel),
+// deterministic LLM providers (staticProvider, blockingProvider), a worker
+// factory (newTestWorker) and the startWorker integration harness, plus
+// waitCond/testTimeout for polling async behavior.
 package reason
 
 import (
@@ -73,8 +77,10 @@ func waitCond(t *testing.T, timeout time.Duration, cond func() bool, msg string)
 	t.Fatalf("timeout waiting for %s", msg)
 }
 
-// newBaseForTest constructs a BaseReasonWorker for budget/budget tests.
-func newBaseForTest(provider llm.LLMProvider, ch *testChannel) *BaseReasonWorker {
+// newTestWorker constructs a bare BaseReasonWorker wired to the test provider
+// and channel (nil args get defaults). Used where a test just needs a worker
+// instance without starting its watch loop.
+func newTestWorker(provider llm.LLMProvider, ch *testChannel) *BaseReasonWorker {
 	if ch == nil {
 		ch = newTestChannel()
 	}
@@ -139,10 +145,14 @@ func (p *blockingProvider) CompleteStream(ctx context.Context, _ *llm.Completion
 }
 func (p *blockingProvider) ListModels(context.Context) ([]llm.ModelInfo, error) { return nil, nil }
 
+// startWorker builds a worker and starts its full watch loop, so integration
+// tests can feed events via ch.in and observe published events via ch. Returns
+// the running worker, its channel, and a cancel func; the worker is stopped
+// and cancelled on test cleanup.
 func startWorker(t *testing.T, prov llm.LLMProvider) (*BaseReasonWorker, *testChannel, context.CancelFunc) {
 	t.Helper()
 	ch := newTestChannel()
-	w := newBaseForTest(prov, ch)
+	w := newTestWorker(prov, ch)
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := w.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)

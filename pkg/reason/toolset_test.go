@@ -11,7 +11,7 @@ import (
 // empty) keeps a bare name, with inner dots turned to underscores, so it is a
 // valid LLM tool identifier.
 func TestEncodeToolNameBuiltin(t *testing.T) {
-	w := newBaseForTest(nil, newTestChannel())
+	w := newTestWorker(nil, newTestChannel())
 	if got := encodeToolName(w, worker.Tool{Name: "context.compress", Provider: w.ID()}); got != "context_compress" {
 		t.Fatalf("builtin encode = %q, want context_compress", got)
 	}
@@ -23,7 +23,7 @@ func TestEncodeToolNameBuiltin(t *testing.T) {
 // TestEncodeToolNameExternal verifies a tool backed by another worker becomes
 // provider__name, so the worker/tool boundary is unambiguous.
 func TestEncodeToolNameExternal(t *testing.T) {
-	w := newBaseForTest(nil, newTestChannel())
+	w := newTestWorker(nil, newTestChannel())
 	if got := encodeToolName(w, worker.Tool{Name: "bash", Provider: "workspace"}); got != "workspace__bash" {
 		t.Fatalf("external encode = %q, want workspace__bash", got)
 	}
@@ -35,7 +35,7 @@ func TestEncodeToolNameExternal(t *testing.T) {
 // TestHandleWorkerReadyAndGone verifies tools and published events are learned
 // from worker.ready and forgotten on worker.gone.
 func TestHandleWorkerReadyAndGone(t *testing.T) {
-	w := newBaseForTest(nil, newTestChannel())
+	w := newTestWorker(nil, newTestChannel())
 
 	ready := event.New(event.TypeWorkerReady, "workspace", map[string]any{
 		"worker_id": "workspace",
@@ -77,7 +77,7 @@ func keys(m map[string]worker.Tool) []string {
 // TestDefaultProviderInstallsFourBuiltins verifies the default BuiltinTools
 // provides exactly the four domain-agnostic tools, routed back to this worker.
 func TestDefaultProviderInstallsFourBuiltins(t *testing.T) {
-	w := newBaseForTest(nil, newTestChannel())
+	w := newTestWorker(nil, newTestChannel())
 
 	want := map[string]bool{"send_message": true, "list_workers": true,
 		"context_compress": true, "context_rotate": true}
