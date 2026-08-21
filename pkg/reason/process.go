@@ -1,15 +1,18 @@
 // Event dispatch and the transcript-input translation it needs.
 //
-// process routes a single event to one handler; each handler and its
-// helper converts the event into a transcript input. This is the "what to
-// do with an event" half of the watch loop (the loop itself lives in
-// watch.go).
+// process routes a single event to one handler; each handler
+// converts the event into a transcript input. This is the "what to
+// do with an event" half of the watch loop (the loop itself lives in watch.go).
 //
-// Three levels of input handling:
+// Input modes form a spectrum of increasing intrusion:
 //
-//	level 1 (append):  append message, schedule if idle, no park
-//	level 2 (reminder/timeout): append message, schedule, park on next round
-//	level 3 (default): interrupt, schedule, park on next round
+//	append (level 1):    append message, schedule if idle, no park
+//	remind (level 2):    append message, schedule, park on next round
+//	interrupt (level 3): interrupt in-flight reasoning, schedule, park
+//
+// None of the three is a default; each caller picks one per input by setting
+// input_mode. hiw, for instance, chooses interrupt by default, but that is its
+// own choice, not a property of the level.
 package reason
 
 import (
@@ -146,14 +149,14 @@ func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 }
 
 // handleInput processes an input event. The input_mode field in the payload
-// controls how the event interacts with pending tool calls:
+// picks one of the three levels (see package comment):
 //
-//	"default" — level 3: interrupt the in-flight reasoning call and schedule
-//	             a fresh round. The pending tools are parked when reason()
-//	             starts (using the stored cause).
-//	"append"  — level 1: append the message and schedule a new round, but only
-//	             when the system is idle (no in-flight reasoning, no pending
-//	             tool calls). Does not interrupt or park anything.
+//	"append" — level 1: append the message and schedule a new round, but only
+//	            when the system is idle (no in-flight reasoning, no pending
+//	            tool calls). Does not interrupt or park anything.
+//	anything else (incl. hiw's usual "default") — level 3 interrupt: cancel the
+//	            in-flight reasoning call and schedule a fresh round; pending
+//	            tools are parked when reason() starts (using the stored cause).
 func (w *BaseReasonWorker) handleInput(evt event.Event) {
 	w.captureTraceID(evt)
 
