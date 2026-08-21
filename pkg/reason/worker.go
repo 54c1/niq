@@ -51,10 +51,11 @@ type Config struct {
 	ID              string
 	Bus             corebus.WorkerSideChannel
 	Subscriptions   []event.EventPattern
-	Provider        llm.LLMProvider
 	Programs        []program.Program
 	EventConverters []EventConverter
 	Transcript      transcript.Transcript
+
+	Provider        llm.LLMProvider
 	ReasoningEffort *string
 
 	ContextWindow    int
