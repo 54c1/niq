@@ -9,7 +9,7 @@ import "github.com/54c1/niq/core/llm"
 // machine that folds lifecycle facts (BuilderInput) into a working transcript
 // and renders it into LLM messages per reasoning round.
 //
-// Design invariants (see doc/design/reason_worker/context-builder.md):
+// Design invariants:
 //   - The transcript is a projection of the fact layer (the event store), not
 //     the worker's identity. Operations transform the projection; facts remain.
 //   - No goroutines, no locks, no I/O: the caller (reason worker) holds its

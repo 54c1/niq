@@ -127,13 +127,20 @@ func (w *BaseReasonWorker) handleReminder(evt event.Event) {
 }
 
 // handleToolResult processes a tool.completed/failed/rejected event.
-// Normal path: resolve a Pending call and update its placeholder.
-// Late path: match a Parked call and append a contextualized message.
-// Untracked call_ids (e.g. synthetic cancel responses) are ignored.
+// Normal path: a Pending call resolves — replace its [pending] placeholder
+// with the outcome. Late path: a Parked call matched — append a contextualized
+// user message (a second tool_result for the same call_id would violate the
+// pairing invariant). Untracked call_ids (e.g. synthetic cancel responses) are
+// ignored.
 func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 	// Normal resolution of a Pending call.
 	if w.toolCallTracker.HandleResponse(evt) {
-		w.updatePlaceholderFromEvent(evt)
+		callID, _ := evt.Payload["call_id"].(string)
+		if callID != "" {
+			name, _ := evt.Payload["name"].(string)
+			text, isErr := resultOutcome(evt)
+			w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
+		}
 		// All tool calls resolved
 		if w.toolCallTracker.Resolved() {
 			w.cancelTimeout()
@@ -144,7 +151,17 @@ func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 
 	// Late result for a Parked call.
 	if parked := w.toolCallTracker.ResolveLate(evt); parked != nil {
-		w.appendLateResult(parked, evt)
+		callID, _ := evt.Payload["call_id"].(string)
+		name, _ := evt.Payload["name"].(string)
+		if callID != "" && name != "" {
+			cause := ""
+			if parked != nil {
+				cause = string(parked.ParkCause)
+			}
+			if text, _ := resultOutcome(evt); text != "" {
+				w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
+			}
+		}
 	}
 }
 
@@ -353,35 +370,5 @@ func resultOutcome(evt event.Event) (string, bool) {
 	return "", false
 }
 
-// updatePlaceholderFromEvent translates a tool result event into a
-// ToolResult input and applies it, replacing the [pending] placeholder.
-func (w *BaseReasonWorker) updatePlaceholderFromEvent(evt event.Event) {
-	callID, _ := evt.Payload["call_id"].(string)
-	name, _ := evt.Payload["name"].(string)
-	if callID == "" {
-		return
-	}
-	text, isErr := resultOutcome(evt)
-	w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
-}
-
-// appendLateResult translates a late-arriving result on a parked call into a
-// LateResult input and applies it (appended as a user message - a second
-// tool_result for the same call_id would violate the pairing invariant).
-// parked carries the cause so the message explains why the call was parked.
-func (w *BaseReasonWorker) appendLateResult(parked *ToolCall, evt event.Event) {
-	callID, _ := evt.Payload["call_id"].(string)
-	name, _ := evt.Payload["name"].(string)
-	if callID == "" || name == "" {
-		return
-	}
-
-	cause := ""
-	if parked != nil {
-		cause = string(parked.ParkCause)
-	}
-
-	if text, _ := resultOutcome(evt); text != "" {
-		w.transcript.Apply(transcript.LateResult{CallID: callID, Name: name, Text: text, Cause: cause})
-	}
-}
+// resultOutcome extracts the human-readable outcome text and error flag from a
+// tool result event. Used by both the normal-resolution and late-result paths.
