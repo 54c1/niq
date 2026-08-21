@@ -116,8 +116,8 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		w.Transcript.Apply(transcript.InputEvent{Messages: cfg.SeedMessages})
 	}
 
-	// Install the built-in tools (send_message, list_workers, compress,
-	// context.close_episode). An embedding worker can add its own to
+	// Install the built-in tools (send_message, list_workers, context.compress,
+	// context.rotate). An embedding worker can add its own to
 	// w.Tools before Start.
 	w.initBuiltinTools()
 
@@ -192,17 +192,14 @@ type BaseReasonWorker struct {
 	Transcript      transcript.Transcript
 	Tools           map[string]worker.Tool    // tools from the bus + built-ins; read by dispatch
 	PublishMap      map[string][]EventPublish // worker ID -> published events
+	toolNameMap     map[string]string         // maps sanitized name -> original tool name
 	toolCallTracker *ToolCallTracker
-
-	toolNameMap map[string]string // maps sanitized name -> original tool name
-
 	eventConverters []EventConverter
 
 	reasoningEffort *string
 	programs        []program.Program
 
-	started bool
-
+	started                 bool
 	needReason              bool
 	isReasoning             bool
 	activeTimeout           string       // current round's set_tool_timeout call_id, "" if none

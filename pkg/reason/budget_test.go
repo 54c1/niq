@@ -108,10 +108,10 @@ func TestHardBudgetCompacts(t *testing.T) {
 	}
 }
 
-// TestCompactToolClosesEpisode verifies the context.close_episode built-in:
+// TestCompactToolRotates verifies the context.rotate built-in:
 // keepTail=1 keeps the call's own placeholder, the digest heads the fresh
 // episode, and a completed tool result is delivered via the bus.
-func TestCompactToolClosesEpisode(t *testing.T) {
+func TestCompactToolRotates(t *testing.T) {
 	prov := &summarizeProvider{summarized: "episode",
 		chatMessage: llm.Message{Role: llm.RoleAssistant, StopReason: "stop"}}
 	ch := newTestChannel()
@@ -131,14 +131,14 @@ func TestCompactToolClosesEpisode(t *testing.T) {
 	// handleToolCalls produces them (pairing invariant holds in the tail).
 	w.Transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
-		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_close_episode"}},
+		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"}},
 	}})
 	w.Transcript.Apply(transcript.ToolPlaceholders{Calls: []llm.ContentBlock{
-		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_close_episode"},
+		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"},
 	}})
 
 	w.mu.Lock()
-	w.handleCompactTool("call_ep", "context.close_episode", w.ID(), map[string]any{}, "close_episode")
+	w.handleCompactTool("call_ep", "context.rotate", w.ID(), map[string]any{}, "rotate")
 	w.mu.Unlock()
 
 	// Tool completion arrives on the bus.
@@ -149,7 +149,7 @@ func TestCompactToolClosesEpisode(t *testing.T) {
 			}
 		}
 		return false
-	}, "close_episode tool completion")
+	}, "rotate tool completion")
 
 	// Fresh episode: digest + the closing assistant tool_call + placeholder.
 	msgs := w.Transcript.Render()

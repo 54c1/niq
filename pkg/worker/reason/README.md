@@ -108,7 +108,7 @@ LLM API 要求在 `assistant(tool_calls: [...])` 和后续 `tool_result(...)` �
 转录不是 worker 的核心状态，是 `builder.ContextBuilder` 的内部投影。默认实现是累加 builder（平铺转录 + cursor）。两个动词已接入：
 
 - **Compact（预算紧缩）**：每轮流式往返后从 `Usage` 记账（最近一次 Input+Output 快照），占比 ≥ 软线（0.85）注入提醒，LLM 调内建 `compress` 工具；≥ 硬线（0.97）系统直接紧缩；开流遇 `ErrorContextLength` 先紧缩再重试一次。摘要由自有 provider 非流式调用完成，directive 可由 program/配置覆盖（`compact_directive`），默认内置 fallback 模板；已有 digest 时走增量合并（早期目标不丢）。投影先行：剥 image/thinking、截断超长 tool_result。切点自动对齐配对边界。
-- **翻篇（`context.close_episode` 工具）**：keepTail=2 的 Compact（保留翻篇调用本身的 assistant(tool_calls)+占位符），新集从 digest 开始。
+- **翻篇（`context.rotate` 工具）**：keepTail=2 的 Compact（保留翻篇调用本身的 assistant(tool_calls)+占位符），新集从 digest 开始。
 
 紧缩在锁外满要（快照->摘要->应用三段），应用时重算 keepTail，摘要期间的并发追加不丢失；单飞（isCompacting）防重复。详见 doc/design/reason_worker/context-builder.md。
 

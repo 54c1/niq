@@ -64,8 +64,8 @@ func (w *BaseReasonWorker) initBuiltinTools() {
 			},
 		},
 		{
-			Name:        "context.close_episode",
-			Description: "Close the current episode (turn the page): summarize the current conversation as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic.",
+			Name:        "context.rotate",
+			Description: "Rotate your context: summarize the current transcript as a carried digest and start a fresh context containing only that digest. Use for periodic/discrete tasks when previous rounds are no longer relevant, or when starting a new topic.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -148,8 +148,8 @@ func (w *BaseReasonWorker) handleToolRequest(evt event.Event) {
 		w.handleListWorkers(callID, toolName, callerID, args)
 	case "context.compress":
 		w.handleCompactTool(callID, toolName, callerID, args, "compress")
-	case "context.close_episode":
-		w.handleCompactTool(callID, toolName, callerID, args, "close_episode")
+	case "context.rotate":
+		w.handleCompactTool(callID, toolName, callerID, args, "rotate")
 	default:
 		evt := event.New(event.TypeToolFailed, w.ID(), map[string]any{
 			"call_id": callID, "name": toolName,
@@ -253,12 +253,12 @@ func (w *BaseReasonWorker) sendFail(callID, toolName, callerID, errMsg string) {
 	_ = w.Channel.Send(context.Background(), evt, callerID)
 }
 
-// handleCompactTool serves compress / context.close_episode: both run the
+// handleCompactTool serves compress / context.rotate: both run the
 // compaction asynchronously (the summary is an LLM call) on their own goroutine
-// and reply via the bus when done. close_episode turns the page (keepTail=2:
-// keeps this call's assistant tool_call + [pending] placeholder so the result
-// stays visible to the model and the pairing invariant holds); compress keeps
-// the configured tail.
+// and reply via the bus when done. rotate turns the page (keepTail=2: keeps
+// this call's assistant tool_call + [pending] placeholder so the result stays
+// visible to the model and the pairing invariant holds); compress keeps the
+// configured tail.
 func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, args map[string]any, kind string) {
 	// Capture the trace under the caller's lock; the goroutine runs unlocked.
 	traceID := w.currentTraceID
@@ -268,12 +268,12 @@ func (w *BaseReasonWorker) handleCompactTool(callID, toolName, callerID string, 
 		if extra, _ := args["directive"].(string); kind == "compress" && extra != "" {
 			directive = directive + "\nCaller focus: " + extra
 		}
-		if carry, _ := args["carry"].(string); kind == "close_episode" && carry != "" {
+		if carry, _ := args["carry"].(string); kind == "rotate" && carry != "" {
 			directive = directive + "\nCarry into the new episode: " + carry
 		}
 
 		keepTail := w.keepTail
-		if kind == "close_episode" {
+		if kind == "rotate" {
 			// Keep the closing tool call's assistant message + its [pending]
 			// placeholder so the result stays visible to the model after
 			// replacement (and the pairing invariant holds).
@@ -295,8 +295,8 @@ func compactResultText(kind string, err error) string {
 	if err != nil {
 		return fmt.Sprintf("compaction failed: %v", err)
 	}
-	if kind == "close_episode" {
-		return "episode closed: history compacted into a carried digest; fresh context started"
+	if kind == "rotate" {
+		return "episode rotated: history compacted into a carried digest; fresh context started"
 	}
 	return "history compacted: older messages replaced by a digest; recent messages kept"
 }
