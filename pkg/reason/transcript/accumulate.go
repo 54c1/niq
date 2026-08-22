@@ -52,17 +52,19 @@ func (b *AccumulateTranscript) Apply(input BuilderInput) {
 
 func (b *AccumulateTranscript) applyLocked(input BuilderInput) {
 	if b.editing {
+		// During a meta edit, only external inputs and late results may still
+		// arrive (the current round has ended; its tool calls were rejected).
+		// Both are append-only additions that should survive the edit's
+		// overwrite, so they are buffered and merged on commit. Any other
+		// variant is a stale worker-lifecycle action and is dropped.
 		switch in := input.(type) {
 		case InputEvent:
 			b.pendingInput = append(b.pendingInput, in.Messages...)
-		default:
-			// Non-InputEvent mutations (tool results, placeholders, outputs)
-			// are part of the editing turn; keep them in the main transcript
-			// buffer to be merged on commit via the tail. We still capture
-			// them so commit keeps them consistent: append to a generic tail.
-			// InputEvent is the only external-input variant; the others are
-			// worker lifecycle that we conservatively buffer as raw messages.
-			b.pendingInput = append(b.pendingInput, extractMessages(input)...)
+		case LateResult:
+			if in.Text != "" {
+				b.pendingInput = append(b.pendingInput,
+					lateResultMessage(in.CallID, in.Name, in.Text, in.Cause))
+			}
 		}
 		return
 	}
@@ -91,34 +93,6 @@ func (b *AccumulateTranscript) applyLocked(input BuilderInput) {
 		// Unknown variants are ignored: the sealed algebra grows at the
 		// interface, old snapshots stay readable.
 	}
-}
-
-// extractMessages flattens any BuilderInput into its composer llm.Messages, for
-// buffering during an edit.
-func extractMessages(input BuilderInput) []llm.Message {
-	switch in := input.(type) {
-	case InputEvent:
-		return in.Messages
-	case AssistantOutput:
-		return []llm.Message{in.Message}
-	case PartialOutput:
-		return []llm.Message{in.Message}
-	case ToolPlaceholders:
-		var out []llm.Message
-		for _, call := range in.Calls {
-			out = append(out, placeholderMessage(call))
-		}
-		return out
-	case ToolResult:
-		return []llm.Message{toolResultMessage(in.CallID, in.Name, in.Text, in.IsErr)}
-	case ToolParked:
-		return []llm.Message{toolResultMessage(in.CallID, in.Name, parkReason(in.Cause), false)}
-	case LateResult:
-		if in.Text != "" {
-			return []llm.Message{lateResultMessage(in.CallID, in.Name, in.Text, in.Cause)}
-		}
-	}
-	return nil
 }
 
 // Render returns the transcript for the next LLM round. The returned slice
