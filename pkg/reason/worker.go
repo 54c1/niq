@@ -141,9 +141,10 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		w.compactor = cfg.Compactor
 	}
 
-	// Install the provider's tools into w.tools (see initBuiltinTools in
-	// tools.go) — the schemas the LLM sees and the dispatch target.
-	w.initBuiltinTools()
+	// Tools are not installed here: on Start, broadcastReady publishes a
+	// worker.ready directed to self carrying this worker's own tool + meta-tool
+	// declarations, which handleWorkerReady discovers into w.tools like any
+	// other worker's. So there is no hardcoded built-in tool set.
 
 	return w
 }
@@ -176,11 +177,25 @@ func (w *BaseReasonWorker) Start(ctx context.Context) error {
 
 // broadcastReady re-announces this worker's presence on the bus in response
 // to a worker.discover. A worker-level identity action.
+// broadcastReady announces this worker's presence on the bus, then publishes a
+// second worker.ready directed to itself carrying this worker's own tool and
+// meta-tool declarations. Reason discovers its own tools from that directed
+// announcement (via handleWorkerReady), the same way it discovers any other
+// worker's - so its built-in tools are not a special hardcoded set but a
+// self-published declaration.
 func (w *BaseReasonWorker) broadcastReady() {
+	// Batch 1: broadcast - announce presence (no tool declaration needed).
 	_ = w.Channel.Broadcast(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
 	}))
+
+	// Batch 2: directed to self - declare this worker's own tools + meta tools.
+	_ = w.Channel.Send(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
+		"worker_id": w.ID(),
+		"type":      "reason",
+		"tools":     selfToolDeclarations(),
+	}), w.ID())
 }
 
 // Stop cancels the worker's event watch.

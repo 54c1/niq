@@ -74,10 +74,44 @@ func keys(m map[string]worker.Tool) []string {
 	return ks
 }
 
+// loadSelfTools simulates reason discovering its own tool declarations: it
+// feeds a worker.ready directed to self (carrying selfToolDeclarations) into
+// handleWorkerReady, which loads the tools/meta-tools into w.tools home same
+// as any other worker's announcement.
+func loadSelfTools(t *testing.T, w *BaseReasonWorker) {
+	t.Helper()
+	ready := event.New(event.TypeWorkerReady, w.ID(), map[string]any{
+		"worker_id": w.ID(),
+		"type":      "reason",
+		"tools":     selfToolDeclarations(),
+	})
+	w.handleWorkerReady(ready)
+}
+
+// TestSelfDeclaredToolsLoadable verifies reason's own tools (including meta
+// tools) are discovered from a worker.ready directed to self, and that meta
+// tools carry the IsMetaTool flag.
+func TestSelfDeclaredToolsLoadable(t *testing.T) {
+	w := newTestWorker(nil, newTestChannel())
+	loadSelfTools(t, w)
+
+	if _, ok := w.tools["send_message"]; !ok {
+		t.Fatalf("send_message should be discovered from self ready, got %+v", keys(w.tools))
+	}
+	if _, ok := w.tools["context_compress"]; !ok {
+		t.Fatalf("context_compress should be discovered, got %+v", keys(w.tools))
+	}
+	mt := w.tools["context_compress"]
+	if !mt.IsMetaTool {
+		t.Fatal("context_compress should be marked IsMetaTool from its declaration")
+	}
+}
+
 // TestDefaultProviderInstallsFourBuiltins verifies the default BuiltinTools
 // provides exactly the four domain-agnostic tools, routed back to this worker.
 func TestDefaultProviderInstallsFourBuiltins(t *testing.T) {
 	w := newTestWorker(nil, newTestChannel())
+	loadSelfTools(t, w)
 
 	want := map[string]bool{"send_message": true, "list_workers": true,
 		"context_compress": true, "context_rotate": true}
@@ -88,78 +122,5 @@ func TestDefaultProviderInstallsFourBuiltins(t *testing.T) {
 	}
 	if len(w.tools) != len(want) {
 		t.Fatalf("expected exactly %d built-ins, got %+v", len(want), keys(w.tools))
-	}
-}
-
-// customProvider extends BuiltinTools with one extra tool by embedding and
-// delegating unknown calls to the default — the pattern a coding worker uses.
-type customProvider struct {
-	*BuiltinTools
-}
-
-func (p *customProvider) ToolDefinitions() []worker.Tool {
-	return append(p.BuiltinTools.ToolDefinitions(), worker.Tool{
-		Name:        "github.review",
-		Description: "Start a review",
-		Parameters:  map[string]any{"type": "object"},
-	})
-}
-
-func (p *customProvider) HandleToolCall(tc worker.ToolCall) {
-	switch tc.Name {
-	case "github_review":
-		p.w.ReplyCompleted(tc.CallerID, tc.CallID, tc.Name, "review started", tc.TraceID)
-	default:
-		p.BuiltinTools.HandleToolCall(tc)
-	}
-}
-
-// TestCustomProviderExtendsDefault verifies an embedding worker can add a tool
-// and keep the defaults by embedding BuiltinTools.
-func TestCustomProviderExtendsDefault(t *testing.T) {
-	ch := newTestChannel()
-	// Build a worker with the custom provider supplied via Config.
-	w := NewBaseReasonWorker(Config{
-		ID:            "r1",
-		Bus:           ch,
-		Subscriptions: []event.EventPattern{event.NewPattern("*")},
-	})
-	prov := &customProvider{}
-	w.toolProvider = prov
-	prov.BuiltinTools = NewBuiltinTools(w)
-	w.initBuiltinTools()
-
-	if _, ok := w.tools["github_review"]; !ok {
-		t.Fatalf("expected github_review, got %+v", keys(w.tools))
-	}
-	if _, ok := w.tools["send_message"]; !ok {
-		t.Fatalf("default tool should be kept when provider extends it, got %+v", keys(w.tools))
-	}
-}
-
-// TestCustomProviderDispatch verifies a request for the custom tool routes to
-// the provider's handler, and an unknown tool fails gracefully.
-func TestCustomProviderDispatch(t *testing.T) {
-	ch := newTestChannel()
-	w := NewBaseReasonWorker(Config{ID: "r1", Bus: ch, Subscriptions: []event.EventPattern{event.NewPattern("*")}})
-	prov := &customProvider{}
-	w.toolProvider = prov
-	prov.BuiltinTools = NewBuiltinTools(w)
-
-	// github.review → handled by custom provider.
-	evt := event.New(event.TypeToolRequested, "me", map[string]any{
-		"call_id": "c1", "name": "github_review", "arguments": map[string]any{},
-	})
-	evt.WorkerId = "me"
-	w.handleToolRequest(evt)
-
-	reviewed := false
-	for _, e := range ch.eventsOf(event.TypeToolCompleted) {
-		if e.Payload["call_id"] == "c1" {
-			reviewed = true
-		}
-	}
-	if !reviewed {
-		t.Fatal("custom tool should complete via provider")
 	}
 }

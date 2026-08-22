@@ -108,6 +108,24 @@ var builtinDefinitions = []worker.Tool{
 	},
 }
 
+// selfToolDeclarations renders this worker's own tool + meta-tool declarations
+// as the worker.ready "tools" payload a reason worker publishes to itself. It
+// is built from builtinDefinitions, carrying each tool's schema and its
+// IsMetaTool flag so a discovering worker can route meta tools to worker.update
+// instead of tool.requested.
+func selfToolDeclarations() []map[string]any {
+	out := make([]map[string]any, 0, len(builtinDefinitions))
+	for _, td := range builtinDefinitions {
+		out = append(out, map[string]any{
+			"name":         td.Name,
+			"description":  td.Description,
+			"parameters":   td.Parameters,
+			"is_meta_tool": td.IsMetaTool,
+		})
+	}
+	return out
+}
+
 // NewBuiltinTools builds the default provider bound to a worker.
 func NewBuiltinTools(w *BaseReasonWorker) *BuiltinTools {
 	return &BuiltinTools{w: w}
@@ -142,15 +160,6 @@ func (t *BuiltinTools) HandleToolCall(tc worker.ToolCall) {
 	}
 }
 
-// initBuiltinTools installs the tool provider's definitions into w.tools so
-// the LLM sees them and calls route back here.
-func (w *BaseReasonWorker) initBuiltinTools() {
-	for _, t := range w.toolProvider.ToolDefinitions() {
-		t.Name = encodeToolName(w, t)
-		w.tools[t.Name] = t
-	}
-}
-
 // handleWorkerReady learns a worker's tools and published events from its
 // worker.ready announcement, updating the known tool set and publishes map.
 func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
@@ -165,6 +174,7 @@ func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 				name, _ := m["name"].(string)
 				desc, _ := m["description"].(string)
 				params, _ := m["parameters"].(map[string]any)
+				isMeta, _ := m["is_meta_tool"].(bool)
 				if name == "" {
 					continue
 				}
@@ -173,6 +183,7 @@ func (w *BaseReasonWorker) handleWorkerReady(evt event.Event) {
 					Description: desc,
 					Parameters:  params,
 					Provider:    workerID,
+					IsMetaTool:  isMeta,
 				}
 				t.Name = encodeToolName(w, t)
 				w.tools[t.Name] = t
