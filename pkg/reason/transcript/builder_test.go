@@ -126,7 +126,8 @@ func TestCompactAppliesDigestAndKeepsTail(t *testing.T) {
 		b.Apply(InputEvent{Messages: []llm.Message{userMsg(fmt.Sprintf("m%d", i))}})
 	}
 
-	b.Compact("summary of m0-m2", 2)
+	b.BeginEdit()
+	b.CommitEdit("summary of m0-m2", 2)
 
 	got := b.Render()
 	if len(got) != 3 {
@@ -140,7 +141,8 @@ func TestCompactAppliesDigestAndKeepsTail(t *testing.T) {
 	}
 
 	// No-op when everything fits in the tail.
-	b.Compact("again", 10)
+	b.BeginEdit()
+	b.CommitEdit("again", 10)
 	if len(b.Render()) != 3 {
 		t.Fatal("compact within tail must be a no-op")
 	}
@@ -164,7 +166,8 @@ func TestCompactAlignsCutToPairing(t *testing.T) {
 
 	// keepTail=1 would cut before the placeholder (orphan tool_result);
 	// alignment must move the cut past it.
-	b.Compact("digest", 1)
+	b.BeginEdit()
+	b.CommitEdit("digest", 1)
 
 	got := b.Render()
 	if got[0].Role != llm.RoleUser || !strings.Contains(got[0].Content[0].Text, "digest") {
@@ -187,7 +190,8 @@ func TestCompactTurnsThePage(t *testing.T) {
 	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
 	b.Apply(AssistantOutput{Message: assistantMsg("b")})
 
-	b.Compact("episode summary", 0)
+	b.BeginEdit()
+	b.CommitEdit("episode summary", 0)
 
 	got := b.Render()
 	if len(got) != 1 {
@@ -195,5 +199,54 @@ func TestCompactTurnsThePage(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Content[0].Text, "episode summary") {
 		t.Fatalf("digest missing: %+v", got[0])
+	}
+}
+
+// TestEditBuffersApply verifies the meta-edit semantics: Apply inputs during
+// BeginEdit..CommitEdit are buffered (not appended), and are merged after the
+// digest on commit, so they are neither lost nor torn by the edit's overwrite.
+func TestEditBuffersApply(t *testing.T) {
+	b := NewAccumulateTranscript()
+	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
+	b.Apply(InputEvent{Messages: []llm.Message{userMsg("b")}})
+
+	// Begin an edit; the snapshot is the pre-edit transcript.
+	b.BeginEdit()
+
+	// While editing, an external input arrives: it must be buffered, not
+	// appended to the visible transcript.
+	b.Apply(InputEvent{Messages: []llm.Message{userMsg("during-edit")}})
+
+	// Commit: digest replaces all but the tail, then the buffered input is
+	// appended (after the digest + tail).
+	b.CommitEdit("summary of a..", 0)
+
+	got := b.Render()
+	if len(got) != 2 {
+		t.Fatalf("expected digest + buffered input, got %d: %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Content[0].Text, "summary of a..") {
+		t.Fatalf("digest head missing: %+v", got[0])
+	}
+	if len(got[1].Content) == 0 || got[1].Content[0].Text != "during-edit" {
+		t.Fatalf("buffered Apply input should be merged after digest: %+v", got[1])
+	}
+}
+
+// TestAbortEditPreserves verifies AbortEdit clears the editing state and the
+// transcript keeps its prior content (buffered inputs are preserved for a
+// later commit, not silently dropped into the visible transcript).
+func TestAbortEditPreserves(t *testing.T) {
+	b := NewAccumulateTranscript()
+	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
+
+	b.BeginEdit()
+	b.Apply(InputEvent{Messages: []llm.Message{userMsg("during")}})
+	b.AbortEdit()
+
+	// Abort: no digest applied; the visible transcript is unchanged.
+	got := b.Render()
+	if len(got) != 1 || got[0].Content[0].Text != "a" {
+		t.Fatalf("abort should leave transcript unchanged, got %+v", got)
 	}
 }

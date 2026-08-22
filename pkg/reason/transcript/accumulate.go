@@ -6,6 +6,7 @@ package transcript
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/54c1/niq/core/llm"
 )
@@ -23,10 +24,16 @@ func digestMessage(digest string) llm.Message {
 	}
 }
 
-// AccumulateTranscript owns the working transcript. It is passive: the
-// caller serializes all access.
+// AccumulateTranscript owns the working transcript. It is concurrency-safe on
+// its own: every method locks internally, and meta edits (BeginEdit..CommitEdit)
+// run their computation without holding the lock while buffering concurrent
+// Apply calls.
 type AccumulateTranscript struct {
-	messages []llm.Message
+	mu sync.Mutex
+
+	messages     []llm.Message
+	editing      bool          // a meta edit is in progress
+	pendingInput []llm.Message // Apply inputs buffered during the edit
 }
 
 // NewAccumulateTranscript creates an empty transcript.
@@ -34,8 +41,31 @@ func NewAccumulateTranscript() *AccumulateTranscript {
 	return &AccumulateTranscript{}
 }
 
-// Apply folds one lifecycle fact into the transcript.
+// Apply folds one lifecycle fact into the transcript. If an edit is in
+// progress, the input is buffered (merged on CommitEdit), so it is neither
+// lost nor torn by the edit's overwrite.
 func (b *AccumulateTranscript) Apply(input BuilderInput) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.applyLocked(input)
+}
+
+func (b *AccumulateTranscript) applyLocked(input BuilderInput) {
+	if b.editing {
+		switch in := input.(type) {
+		case InputEvent:
+			b.pendingInput = append(b.pendingInput, in.Messages...)
+		default:
+			// Non-InputEvent mutations (tool results, placeholders, outputs)
+			// are part of the editing turn; keep them in the main transcript
+			// buffer to be merged on commit via the tail. We still capture
+			// them so commit keeps them consistent: append to a generic tail.
+			// InputEvent is the only external-input variant; the others are
+			// worker lifecycle that we conservatively buffer as raw messages.
+			b.pendingInput = append(b.pendingInput, extractMessages(input)...)
+		}
+		return
+	}
 	switch in := input.(type) {
 	case InputEvent:
 		b.messages = append(b.messages, in.Messages...)
@@ -63,27 +93,89 @@ func (b *AccumulateTranscript) Apply(input BuilderInput) {
 	}
 }
 
-// Render returns the transcript for the next LLM round. Identity projection:
-// callers must not mutate the returned slice.
+// extractMessages flattens any BuilderInput into its composer llm.Messages, for
+// buffering during an edit.
+func extractMessages(input BuilderInput) []llm.Message {
+	switch in := input.(type) {
+	case InputEvent:
+		return in.Messages
+	case AssistantOutput:
+		return []llm.Message{in.Message}
+	case PartialOutput:
+		return []llm.Message{in.Message}
+	case ToolPlaceholders:
+		var out []llm.Message
+		for _, call := range in.Calls {
+			out = append(out, placeholderMessage(call))
+		}
+		return out
+	case ToolResult:
+		return []llm.Message{toolResultMessage(in.CallID, in.Name, in.Text, in.IsErr)}
+	case ToolParked:
+		return []llm.Message{toolResultMessage(in.CallID, in.Name, parkReason(in.Cause), false)}
+	case LateResult:
+		if in.Text != "" {
+			return []llm.Message{lateResultMessage(in.CallID, in.Name, in.Text, in.Cause)}
+		}
+	}
+	return nil
+}
+
+// Render returns the transcript for the next LLM round. The returned slice
+// must not be mutated.
 func (b *AccumulateTranscript) Render() []llm.Message {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.messages
 }
 
-// Compact applies a pre-computed digest: the transcript becomes
-// [digest] + last keepTail messages (evaluated at apply time, so concurrent
-// appends during summarization are preserved). No-op when there is nothing
-// beyond the tail to compact. The cut point is alignment-corrected: it never
-// falls between an assistant(tool_calls) message and its tool_result
-// messages (the pairing invariant would be violated on the tail side).
-func (b *AccumulateTranscript) Compact(digest string, keepTail int) {
-	n := len(b.messages)
-	if n <= keepTail {
+// BeginEdit starts a meta edit: marks the transcript as editing and returns a
+// snapshot. The lock is released before returning, so the caller can compute
+// off-transcript (e.g. an LLM summary); Apply calls during the edit are
+// buffered.
+func (b *AccumulateTranscript) BeginEdit() []llm.Message {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.editing = true
+	return b.messages
+}
+
+// CommitEdit applies a meta edit: replaces all but the last keepTail messages
+// with a digest (alignment-corrected), then merges the Apply inputs buffered
+// during the edit. No-op if no edit is in progress.
+func (b *AccumulateTranscript) CommitEdit(digest string, keepTail int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.editing {
 		return
 	}
-	cut := n - keepTail
-	cut = alignCutToPairing(b.messages, cut)
-	kept := append([]llm.Message{digestMessage(digest)}, b.messages[cut:]...)
-	b.messages = kept
+	b.editing = false
+
+	n := len(b.messages)
+	if n > keepTail {
+		cut := alignCutToPairing(b.messages, n-keepTail)
+		b.messages = append([]llm.Message{digestMessage(digest)}, b.messages[cut:]...)
+	}
+	if len(b.pendingInput) > 0 {
+		b.messages = append(b.messages, b.pendingInput...)
+		b.pendingInput = nil
+	}
+}
+
+// AbortEdit cancels a meta edit without applying it: clears the editing state
+// and leaves buffered inputs unmerged (the main transcript stays as it was;
+// buffered inputs are preserved here so a later commit does not lose them, and
+// they are appended by the next successful commit). No-op if no edit is in
+// progress.
+func (b *AccumulateTranscript) AbortEdit() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.editing {
+		return
+	}
+	b.editing = false
+	// Keep pendingInput as-is; a later commit will merge it. This preserves
+	// inputs received during an aborted edit rather than dropping them.
 }
 
 // alignCutToPairing moves a cut point forward past tool_result messages that

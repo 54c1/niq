@@ -121,10 +121,12 @@ func (c *DefaultCompactor) Rotate(ctx context.Context, t transcript.Transcript, 
 	return c.compact(ctx, t, directive, 2)
 }
 
-// compact is the shared core: projection (t.Render), optional previous-digest
-// incremental mode, LLM summarize, then t.Compact(digest, keepTail).
+// compact is the shared core: snapshot via BeginEdit, optional previous-digest
+// incremental mode, LLM summarize (no lock held), then apply via CommitEdit.
+// If the summary fails, the edit is aborted and Apply inputs buffered during
+// the window are preserved (merged by a later commit).
 func (c *DefaultCompactor) compact(ctx context.Context, t transcript.Transcript, directive string, keepTail int) error {
-	msgs := t.Render()
+	msgs := t.BeginEdit()
 	projection := projectTranscript(msgs)
 	previousDigest := currentDigest(msgs)
 
@@ -133,9 +135,10 @@ func (c *DefaultCompactor) compact(ctx context.Context, t transcript.Transcript,
 	}
 	digest, err := c.summarize(ctx, projection, directive, previousDigest)
 	if err != nil {
+		t.AbortEdit()
 		return fmt.Errorf("summarize: %w", err)
 	}
-	t.Compact(digest, keepTail)
+	t.CommitEdit(digest, keepTail)
 	log.Printf("[reason] transcript compacted (keepTail=%d, digest=%d chars, update=%v)",
 		keepTail, len(digest), previousDigest != "")
 	return nil

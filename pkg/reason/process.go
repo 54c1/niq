@@ -88,7 +88,6 @@ func (w *BaseReasonWorker) handleWorkerUpdate(evt event.Event) {
 
 	switch op {
 	case "compress", "rotate":
-		w.metaInProgress = true
 		traceID := evt.TraceID
 		// The requester may carry a directive (compress focus) or a carry
 		// (rotate) - append either to the compaction directive.
@@ -101,7 +100,6 @@ func (w *BaseReasonWorker) handleWorkerUpdate(evt event.Event) {
 		}
 		go func() {
 			var err error
-			w.mu.Lock()
 			if op == "rotate" {
 				if c, ok := w.compactor.(*DefaultCompactor); ok {
 					err = c.Rotate(context.Background(), w.transcript, directive)
@@ -111,13 +109,11 @@ func (w *BaseReasonWorker) handleWorkerUpdate(evt event.Event) {
 			} else {
 				err = w.compactor.Compact(context.Background(), w.transcript, directive)
 			}
-			// Flush the input buffered while the operation ran; the fresh
-			// transcript plus these inputs is what the next round sees.
-			if len(w.metaInputBuf) > 0 {
-				w.transcript.Apply(transcript.InputEvent{Messages: w.metaInputBuf})
-				w.metaInputBuf = nil
-			}
-			w.metaInProgress = false
+			// The transcript self-buffers Apply inputs during the edit and merges
+			// them on commit, so no worker-side buffer is needed. Just note the
+			// operation finished and schedule the next round (a brief lock for
+			// the scheduling flags).
+			w.mu.Lock()
 			w.needReason = true
 			w.mu.Unlock()
 
@@ -284,25 +280,10 @@ func (w *BaseReasonWorker) recallToolCalls(tcs []*ToolCall) {
 	}
 }
 
-// bufferIfMetaInProgress routes input messages into the meta-operation
-// buffer when a meta operation is transforming the transcript. Returns true
-// if buffered (the caller should return; the buffer is flushed after the
-// operation completes, which also sets needReason).
-func (w *BaseReasonWorker) bufferIfMetaInProgress(msgs []llm.Message) bool {
-	if !w.metaInProgress {
-		return false
-	}
-	w.metaInputBuf = append(w.metaInputBuf, msgs...)
-	return true
-}
-
 // appendInput appends messages and schedules a new round only when the system
 // is idle - no in-flight reasoning and no pending tool calls. Does not
 // interrupt or park anything. This is the least intrusive input mode (level 1).
 func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
-	if w.bufferIfMetaInProgress(msgs) {
-		return
-	}
 	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 
 	if !w.isReasoning && w.toolCallTracker.Resolved() {
@@ -315,9 +296,6 @@ func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
 // here. This is the moderate input mode (level 2) — it does not interrupt
 // an in-flight reasoning call, but ensures the next round responds promptly.
 func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
-	if w.bufferIfMetaInProgress(msgs) {
-		return
-	}
 	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 	w.immediateReasoningCause = cause
 	w.needReason = true
@@ -328,9 +306,6 @@ func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause)
 // starts. This is the strongest input mode (level 3) — it interrupts the
 // current LLM call so the new input is handled immediately.
 func (w *BaseReasonWorker) interruptInput(msgs []llm.Message, cause PreemptCause) {
-	if w.bufferIfMetaInProgress(msgs) {
-		return
-	}
 	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
 	w.interruptReason = cause
 	if w.cancelReason != nil {

@@ -255,14 +255,6 @@ type BaseReasonWorker struct {
 	cancelReason context.CancelFunc
 	cancelRun    context.CancelFunc
 
-	// Meta-operation state; guarded by w.mu. While a meta operation (e.g.
-	// compaction) runs, incoming input events are buffered instead of applied:
-	// the operation transforms the transcript from a snapshot, and edits made
-	// mid-flight would be overwritten by its apply. The buffer is appended back
-	// after the operation completes, which also sets needReason.
-	metaInProgress bool
-	metaInputBuf   []llm.Message
-
 	// Context budget state; guarded by w.mu
 	contextWindow            int
 	budgetSoft               float64

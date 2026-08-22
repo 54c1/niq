@@ -128,9 +128,6 @@ func TestMetaCompressViaWorkerUpdate(t *testing.T) {
 	waitCond(t, testTimeout, func() bool {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		if w.metaInProgress {
-			return false
-		}
 		msgs := w.transcript.Render()
 		for _, m := range msgs {
 			if len(m.Content) > 0 && strings.Contains(m.Content[0].Text, "DIGEST") {
@@ -167,36 +164,23 @@ func TestMetaRotateViaWorkerUpdate(t *testing.T) {
 		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"},
 	}})
 
-	// A meta operation is running: input arriving now is buffered, not applied.
-	w.metaInProgress = true
-	if !w.bufferIfMetaInProgress([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "buffered-input"}}}}) {
-		t.Fatal("input during meta operation should be buffered")
-	}
-
 	w.mu.Lock()
 	w.handleWorkerUpdate(event.New(event.TypeWorkerUpdate, "me", map[string]any{"op": "rotate"}))
 	w.mu.Unlock()
 
+	// Rotate completes asynchronously.
 	waitCond(t, testTimeout, func() bool {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		return !w.metaInProgress
+		msgs := w.transcript.Render()
+		return len(msgs) > 0 && strings.Contains(msgs[0].Content[0].Text, "DIGEST")
 	}, "rotate to complete")
 
-	// Rotate kept the call's own pair after the digest head.
+	// Rotate kept the call's own pair after the digest head. The transcript
+	// self-buffered during the edit, so no worker-side buffer is involved.
 	msgs := w.transcript.Render()
 	if !strings.Contains(msgs[0].Content[0].Text, "DIGEST") {
 		t.Fatalf("digest head missing: %+v", msgs[0])
-	}
-	// Buffered inputs were flushed after the operation.
-	foundBuf := false
-	for _, m := range msgs {
-		if len(m.Content) > 0 && strings.Contains(m.Content[0].Text, "buffered-input") {
-			foundBuf = true
-		}
-	}
-	if !foundBuf {
-		t.Fatalf("buffered input should be flushed after meta op, got %+v", msgs)
 	}
 }
 
