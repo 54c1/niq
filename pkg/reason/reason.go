@@ -398,15 +398,12 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 		// the next round decides whether to issue it again. This mirrors a
 		// tool call being parked on preemption, minus the dispatch.
 		if w.needReason {
+			// A newer input already requested reasoning. Meta operations
+			// (compress/rotate) edit the transcript and depend on its tail being
+			// current; the scheduled input would make that tail stale (especially
+			// rotate, which keeps only the latest user turn). So they are dropped
+			// — nothing is dispatched or applied — and the next round re-decides.
 			log.Printf("[reason %s] meta tool %s yielded to pending input", w.ID(), metaCall.ToolName)
-			for i := range busCalls {
-				w.transcript.Apply(transcript.ToolResult{
-					CallID: busCalls[i].ToolCallID,
-					Name:   busCalls[i].ToolName,
-					Text:   "Rejected: a newer input arrived; this call was dropped. Re-issue it in the next round if still needed.",
-					IsErr:  true,
-				})
-			}
 			w.isReasoning = false
 			w.mu.Unlock()
 			w.tryReason(ctx)
