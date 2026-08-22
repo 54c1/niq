@@ -110,12 +110,13 @@ var builtinDefinitions = []worker.Tool{
 
 // selfToolDeclarations renders this worker's own tool + meta-tool declarations
 // as the worker.ready "tools" payload a reason worker publishes to itself. It
-// is built from builtinDefinitions, carrying each tool's schema and its
-// IsMetaTool flag so a discovering worker can route meta tools to worker.update
-// instead of tool.requested.
-func selfToolDeclarations() []map[string]any {
-	out := make([]map[string]any, 0, len(builtinDefinitions))
-	for _, td := range builtinDefinitions {
+// delegates to the tool provider, carrying each tool's schema and its IsMetaTool
+// flag so a discovering worker can route meta tools to worker.update instead of
+// tool.requested.
+func (w *BaseReasonWorker) selfToolDeclarations() []map[string]any {
+	defs := w.toolProvider.ToolDefinitions()
+	out := make([]map[string]any, 0, len(defs))
+	for _, td := range defs {
 		out = append(out, map[string]any{
 			"name":         td.Name,
 			"description":  td.Description,

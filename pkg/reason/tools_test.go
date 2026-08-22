@@ -83,7 +83,7 @@ func loadSelfTools(t *testing.T, w *BaseReasonWorker) {
 	ready := event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
-		"tools":     selfToolDeclarations(),
+		"tools":     w.selfToolDeclarations(),
 	})
 	w.handleWorkerReady(ready)
 }

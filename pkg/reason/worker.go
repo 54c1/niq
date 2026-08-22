@@ -194,7 +194,7 @@ func (w *BaseReasonWorker) broadcastReady() {
 	_ = w.Channel.Send(context.Background(), event.New(event.TypeWorkerReady, w.ID(), map[string]any{
 		"worker_id": w.ID(),
 		"type":      "reason",
-		"tools":     selfToolDeclarations(),
+		"tools":     w.selfToolDeclarations(),
 	}), w.ID())
 }
 
