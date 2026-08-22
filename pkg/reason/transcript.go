@@ -1,12 +1,12 @@
 // Package transcript holds the reason worker's context construction core: the
 // working "notes" a reasoning worker keeps. See
 // pkg/reason for the reasoning loop that owns a Transcript.
-package transcript
+package reason
 
 import "github.com/54c1/niq/core/llm"
 
 // Transcript is the working "notes" of a reasoning worker: a self-synchronized
-// data structure that folds lifecycle facts (BuilderInput) into a working
+// data structure that folds lifecycle facts (TranscriptPatch) into a working
 // transcript and renders it into LLM messages per reasoning round.
 //
 // It is concurrency-safe by itself: a meta operation that must edit the
@@ -32,10 +32,10 @@ import "github.com/54c1/niq/core/llm"
 //
 // The interface is evolving: a single implementation (Accumulate) for now.
 type Transcript interface {
-	// Apply folds one lifecycle fact into the transcript. If an edit is in
+	// Apply folds one lifecycle fact into the  If an edit is in
 	// progress (BeginEdit..CommitEdit), the input is buffered and merged on
 	// commit, not lost.
-	Apply(input BuilderInput)
+	Apply(input TranscriptPatch)
 
 	// Render returns the message list for the next LLM round. The returned
 	// slice must be treated as read-only.
@@ -65,61 +65,61 @@ type Transcript interface {
 	Restore(state []byte) error
 }
 
-// BuilderInput is a sealed lifecycle fact translated by the reason worker.
+// TranscriptPatch is a sealed lifecycle fact translated by the reason worker.
 // Exactly one variant is carried per Apply call; Apply order is history.
-type BuilderInput interface{ isBuilderInput() }
+type TranscriptPatch interface{ isTranscriptPatch() }
 
-// InputEvent carries externally-sourced messages (user input, reminders,
-// timeout notices, abort records) into the transcript.
-type InputEvent struct {
+// InputPatch carries externally-sourced messages (user input, reminders,
+// timeout notices, abort records) into the
+type InputPatch struct {
 	Messages []llm.Message
 }
 
-// AssistantOutput records a completed reasoning round's final message.
-type AssistantOutput struct {
+// AssistantOutputPatch records a completed reasoning round's final message.
+type AssistantOutputPatch struct {
 	Message llm.Message
 }
 
-// PartialOutput records content preserved from an interrupted round.
-type PartialOutput struct {
+// PartialOutputPatch records content preserved from an interrupted round.
+type PartialOutputPatch struct {
 	Message llm.Message
 }
 
-// ToolPlaceholders inserts [pending] tool_result entries for dispatched
+// ToolPlaceholdersPatch inserts [pending] tool_result entries for dispatched
 // tool calls, preserving transcript ordering. Replaced in place later.
-type ToolPlaceholders struct {
+type ToolPlaceholdersPatch struct {
 	Calls []llm.ContentBlock
 }
 
-// ToolResult replaces the placeholder for a resolved tool call.
-type ToolResult struct {
+// ToolResultPatch replaces the placeholder for a resolved tool call.
+type ToolResultPatch struct {
 	CallID string
 	Name   string
 	Text   string
 	IsErr  bool
 }
 
-// ToolParked replaces the placeholder for a parked (no longer awaited) call.
-type ToolParked struct {
+// ToolParkedPatch replaces the placeholder for a parked (no longer awaited) call.
+type ToolParkedPatch struct {
 	CallID string
 	Name   string
 	Cause  string // why the call was parked (timeout / input / abort / reminder)
 }
 
-// LateResult appends a contextualized user message for a late-arriving
+// LateResultPatch appends a contextualized user message for a late-arriving
 // result on a parked call (a second tool_result for the same call_id would
 // violate the pairing invariant).
-type LateResult struct {
+type LateResultPatch struct {
 	CallID string
 	Name   string
 	Text   string
 	Cause  string
 }
 
-func (InputEvent) isBuilderInput()       {}
-func (AssistantOutput) isBuilderInput()  {}
-func (PartialOutput) isBuilderInput()    {}
-func (ToolPlaceholders) isBuilderInput() {}
-func (ToolResult) isBuilderInput()       {}
-func (ToolParked) isBuilderInput()       {}
-func (LateResult) isBuilderInput()       {}
+func (InputPatch) isTranscriptPatch()            {}
+func (AssistantOutputPatch) isTranscriptPatch()  {}
+func (PartialOutputPatch) isTranscriptPatch()    {}
+func (ToolPlaceholdersPatch) isTranscriptPatch() {}
+func (ToolResultPatch) isTranscriptPatch()       {}
+func (ToolParkedPatch) isTranscriptPatch()       {}
+func (LateResultPatch) isTranscriptPatch()       {}

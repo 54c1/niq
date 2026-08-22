@@ -1,4 +1,4 @@
-package transcript
+package reason
 
 import (
 	"fmt"
@@ -25,10 +25,10 @@ func toolCall(callID, name string) llm.ContentBlock {
 func TestApplyLifecycle(t *testing.T) {
 	b := NewAccumulateTranscript()
 
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("hi")}})
-	b.Apply(AssistantOutput{Message: assistantMsg("hello")})
-	b.Apply(ToolPlaceholders{Calls: []llm.ContentBlock{toolCall("c1", "bash"), toolCall("c2", "read")}})
-	b.Apply(ToolResult{CallID: "c1", Name: "bash", Text: "0"})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("hi")}})
+	b.Apply(AssistantOutputPatch{Message: assistantMsg("hello")})
+	b.Apply(ToolPlaceholdersPatch{Calls: []llm.ContentBlock{toolCall("c1", "bash"), toolCall("c2", "read")}})
+	b.Apply(ToolResultPatch{CallID: "c1", Name: "bash", Text: "0"})
 
 	got := b.Render()
 	if len(got) != 4 {
@@ -47,7 +47,7 @@ func TestApplyLifecycle(t *testing.T) {
 	}
 
 	// Park c2: in-place replacement with the cause explanation.
-	b.Apply(ToolParked{CallID: "c2", Name: "read", Cause: "timeout"})
+	b.Apply(ToolParkedPatch{CallID: "c2", Name: "read", Cause: "timeout"})
 	got = b.Render()
 	if got[3].Content[0].Text != parkReason("timeout") {
 		t.Fatalf("c2 park text: %q", got[3].Content[0].Text)
@@ -55,7 +55,7 @@ func TestApplyLifecycle(t *testing.T) {
 
 	// Late result for parked c2: appended as a user message, not a second
 	// tool_result for the same call_id.
-	b.Apply(LateResult{CallID: "c2", Name: "read", Text: "late-out", Cause: "timeout"})
+	b.Apply(LateResultPatch{CallID: "c2", Name: "read", Text: "late-out", Cause: "timeout"})
 	got = b.Render()
 	if len(got) != 5 {
 		t.Fatalf("got %d messages, want 5", len(got))
@@ -70,7 +70,7 @@ func TestApplyLifecycle(t *testing.T) {
 // transcript like any assistant output.
 func TestPartialOutputPreserved(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(PartialOutput{Message: llm.Message{
+	b.Apply(PartialOutputPatch{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "interrupted",
 		Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "partial"}},
 	}})
@@ -83,8 +83,8 @@ func TestPartialOutputPreserved(t *testing.T) {
 // TestStateRestoreRoundTrip verifies the snapshot cache round-trips.
 func TestStateRestoreRoundTrip(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("hello")}})
-	b.Apply(AssistantOutput{Message: assistantMsg("hi")})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("hello")}})
+	b.Apply(AssistantOutputPatch{Message: assistantMsg("hi")})
 
 	state, err := b.State()
 	if err != nil {
@@ -106,12 +106,12 @@ func TestStateRestoreRoundTrip(t *testing.T) {
 	}
 }
 
-// TestToolResultUnknownCallIsSafe verifies a ToolResult for an unknown
+// TestToolResultUnknownCallIsSafe verifies a ToolResultPatch for an unknown
 // call_id does not corrupt the transcript (no matching placeholder: no-op).
 func TestToolResultUnknownCallIsSafe(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("hi")}})
-	b.Apply(ToolResult{CallID: "ghost", Name: "x", Text: "y"})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("hi")}})
+	b.Apply(ToolResultPatch{CallID: "ghost", Name: "x", Text: "y"})
 	if got := b.Render(); len(got) != 1 {
 		t.Fatalf("unknown tool result should be a no-op, got %d messages", len(got))
 	}
@@ -123,7 +123,7 @@ func TestToolResultUnknownCallIsSafe(t *testing.T) {
 func TestCompactAppliesDigestAndKeepsTail(t *testing.T) {
 	b := NewAccumulateTranscript()
 	for i := 0; i < 5; i++ {
-		b.Apply(InputEvent{Messages: []llm.Message{userMsg(fmt.Sprintf("m%d", i))}})
+		b.Apply(InputPatch{Messages: []llm.Message{userMsg(fmt.Sprintf("m%d", i))}})
 	}
 
 	b.BeginEdit()
@@ -154,15 +154,15 @@ func TestCompactAppliesDigestAndKeepsTail(t *testing.T) {
 // compacted side.
 func TestCompactAlignsCutToPairing(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("q")}})
-	b.Apply(AssistantOutput{Message: llm.Message{
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("q")}})
+	b.Apply(AssistantOutputPatch{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
 		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"}},
 	}})
-	b.Apply(ToolPlaceholders{Calls: []llm.ContentBlock{
+	b.Apply(ToolPlaceholdersPatch{Calls: []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
 	}})
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("after")}})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("after")}})
 
 	// keepTail=1 would cut before the placeholder (orphan tool_result);
 	// alignment must move the cut past it.
@@ -187,8 +187,8 @@ func TestCompactAlignsCutToPairing(t *testing.T) {
 // the digest alone.
 func TestCompactTurnsThePage(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
-	b.Apply(AssistantOutput{Message: assistantMsg("b")})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("a")}})
+	b.Apply(AssistantOutputPatch{Message: assistantMsg("b")})
 
 	b.BeginEdit()
 	b.CommitEdit("episode summary", 0)
@@ -207,15 +207,15 @@ func TestCompactTurnsThePage(t *testing.T) {
 // digest on commit, so they are neither lost nor torn by the edit's overwrite.
 func TestEditBuffersApply(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("b")}})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("a")}})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("b")}})
 
-	// Begin an edit; the snapshot is the pre-edit transcript.
+	// Begin an edit; the snapshot is the pre-edit
 	b.BeginEdit()
 
 	// While editing, an external input arrives: it must be buffered, not
-	// appended to the visible transcript.
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("during-edit")}})
+	// appended to the visible
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("during-edit")}})
 
 	// Commit: digest replaces all but the tail, then the buffered input is
 	// appended (after the digest + tail).
@@ -238,10 +238,10 @@ func TestEditBuffersApply(t *testing.T) {
 // later commit, not silently dropped into the visible transcript).
 func TestAbortEditPreserves(t *testing.T) {
 	b := NewAccumulateTranscript()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("a")}})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("a")}})
 
 	b.BeginEdit()
-	b.Apply(InputEvent{Messages: []llm.Message{userMsg("during")}})
+	b.Apply(InputPatch{Messages: []llm.Message{userMsg("during")}})
 	b.AbortEdit()
 
 	// Abort: no digest applied; the visible transcript is unchanged.

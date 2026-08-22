@@ -3,7 +3,7 @@
 // CommitEdit. Concurrency-safe on its own: each method locks internally, and
 // meta edits (BeginEdit..CommitEdit) run their computation without holding
 // the lock while buffering concurrent external inputs.
-package transcript
+package reason
 
 import (
 	"encoding/json"
@@ -26,7 +26,7 @@ func digestMessage(digest string) llm.Message {
 	}
 }
 
-// AccumulateTranscript owns the working transcript. It is concurrency-safe on
+// AccumulateTranscript owns the working  It is concurrency-safe on
 // its own: every method locks internally, and meta edits (BeginEdit..CommitEdit)
 // run their computation without holding the lock while buffering concurrent
 // Apply calls.
@@ -38,21 +38,21 @@ type AccumulateTranscript struct {
 	pendingInput []llm.Message // Apply inputs buffered during the edit
 }
 
-// NewAccumulateTranscript creates an empty transcript.
+// NewAccumulateTranscript creates an empty
 func NewAccumulateTranscript() *AccumulateTranscript {
 	return &AccumulateTranscript{}
 }
 
-// Apply folds one lifecycle fact into the transcript. If an edit is in
+// Apply folds one lifecycle fact into the  If an edit is in
 // progress, the input is buffered (merged on CommitEdit), so it is neither
 // lost nor torn by the edit's overwrite.
-func (b *AccumulateTranscript) Apply(input BuilderInput) {
+func (b *AccumulateTranscript) Apply(input TranscriptPatch) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.applyLocked(input)
 }
 
-func (b *AccumulateTranscript) applyLocked(input BuilderInput) {
+func (b *AccumulateTranscript) applyLocked(input TranscriptPatch) {
 	if b.editing {
 		// During a meta edit, only external inputs and late results may still
 		// arrive (the current round has ended; its tool calls were rejected).
@@ -60,9 +60,9 @@ func (b *AccumulateTranscript) applyLocked(input BuilderInput) {
 		// overwrite, so they are buffered and merged on commit. Any other
 		// variant is a stale worker-lifecycle action and is dropped.
 		switch in := input.(type) {
-		case InputEvent:
+		case InputPatch:
 			b.pendingInput = append(b.pendingInput, in.Messages...)
-		case LateResult:
+		case LateResultPatch:
 			if in.Text != "" {
 				b.pendingInput = append(b.pendingInput,
 					lateResultMessage(in.CallID, in.Name, in.Text, in.Cause))
@@ -71,23 +71,23 @@ func (b *AccumulateTranscript) applyLocked(input BuilderInput) {
 		return
 	}
 	switch in := input.(type) {
-	case InputEvent:
+	case InputPatch:
 		b.messages = append(b.messages, in.Messages...)
-	case AssistantOutput:
+	case AssistantOutputPatch:
 		b.messages = append(b.messages, in.Message)
-	case PartialOutput:
+	case PartialOutputPatch:
 		b.messages = append(b.messages, in.Message)
-	case ToolPlaceholders:
+	case ToolPlaceholdersPatch:
 		for _, call := range in.Calls {
 			b.messages = append(b.messages, placeholderMessage(call))
 		}
-	case ToolResult:
+	case ToolResultPatch:
 		b.messages = replacePlaceholder(b.messages, in.CallID,
 			toolResultMessage(in.CallID, in.Name, in.Text, in.IsErr))
-	case ToolParked:
+	case ToolParkedPatch:
 		b.messages = replacePlaceholder(b.messages, in.CallID,
 			toolResultMessage(in.CallID, in.Name, parkReason(in.Cause), false))
-	case LateResult:
+	case LateResultPatch:
 		if in.Text != "" {
 			b.messages = append(b.messages, lateResultMessage(in.CallID, in.Name, in.Text, in.Cause))
 		}

@@ -28,7 +28,6 @@ import (
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/program"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // EventConverter pairs an event pattern with a conversion function that
@@ -60,7 +59,7 @@ type Config struct {
 	Subscriptions   []event.EventPattern
 	Programs        []program.Program
 	EventConverters []EventConverter
-	Transcript      transcript.Transcript
+	Transcript      Transcript
 
 	Provider        llm.LLMProvider
 	ReasoningEffort *string
@@ -90,7 +89,7 @@ type Config struct {
 // tracker, and seeds the transcript with any handover brief.
 func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 	if cfg.Transcript == nil {
-		cfg.Transcript = transcript.NewAccumulateTranscript()
+		cfg.Transcript = NewAccumulateTranscript()
 	}
 	if cfg.BudgetSoft <= 0 {
 		cfg.BudgetSoft = DefaultBudgetSoft
@@ -123,7 +122,7 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		reasoningEffort:          cfg.ReasoningEffort,
 	}
 	if len(cfg.SeedMessages) > 0 {
-		w.transcript.Apply(transcript.InputEvent{Messages: cfg.SeedMessages})
+		w.transcript.Apply(InputPatch{Messages: cfg.SeedMessages})
 	}
 
 	// Peer the tool provider (default BuiltinTools if none supplied). Custom
@@ -207,7 +206,8 @@ func (w *BaseReasonWorker) Snapshot() ([]byte, error) {
 }
 
 // Restore rehydrates the worker from a Snapshot blob, restoring the reasoning
-// transcript. Called after construction and before Start.
+//
+//	Called after construction and before Start.
 func (w *BaseReasonWorker) Restore(state []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -231,7 +231,7 @@ type BaseReasonWorker struct {
 	mu sync.Mutex
 
 	llmProvider     llm.LLMProvider
-	transcript      transcript.Transcript
+	transcript      Transcript
 	tools           map[string]worker.Tool // tools from the bus + built-ins; read by dispatch
 	programs        []program.Program
 	publishMap      map[string][]EventPublish // worker ID -> published events

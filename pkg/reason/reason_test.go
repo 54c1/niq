@@ -7,7 +7,6 @@ import (
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // TestPrepareReasoningBuildsRequest verifies prepareReasoning parks leftover
@@ -21,7 +20,7 @@ func TestPrepareReasoningBuildsRequest(t *testing.T) {
 	w.toolCallTracker.Add("workspace", []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "c1", ToolName: "bash"},
 	})
-	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
+	w.transcript.Apply(InputPatch{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "hi"}}}}})
 	w.mu.Unlock()
 
 	traceID, req := w.prepareReasoning()

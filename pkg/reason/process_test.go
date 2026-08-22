@@ -104,7 +104,7 @@ func TestEventPatternSourceFilter(t *testing.T) {
 }
 
 // TestAbortParksTools verifies an abort event parks pending tools and records
-// the abort in the transcript.
+// the abort in the
 func TestAbortParksTools(t *testing.T) {
 	w, _, _ := startWorker(t, &staticProvider{})
 	// Simulate a pending tool call.

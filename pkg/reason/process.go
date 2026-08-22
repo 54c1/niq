@@ -23,7 +23,6 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // process routes an event through one of the dispatch paths:
@@ -133,7 +132,7 @@ func (w *BaseReasonWorker) handleWorkerUpdate(evt event.Event) {
 
 // handleAbort cancels the current LLM call, parks all pending tools (so late
 // results can still be contextualized), best-effort recalls them, and records
-// the abort in the transcript. needReason is cleared so no new
+// the abort in the  needReason is cleared so no new
 // reasoning round starts until the next worker.input.
 func (w *BaseReasonWorker) handleAbort(_ event.Event) {
 	w.interruptReason = PreemptCauseAbort
@@ -157,7 +156,7 @@ func (w *BaseReasonWorker) handleAbort(_ event.Event) {
 
 	// Record the abort in the working transcript so the LLM
 	// knows what happened when the next round starts.
-	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
+	w.transcript.Apply(InputPatch{Messages: []llm.Message{{
 		Role: llm.RoleUser,
 		Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: fmt.Sprintf("[system] reasoning was aborted. %d tool call(s) parked.", len(tcs))}},
@@ -207,7 +206,7 @@ func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 		if callID != "" {
 			name, _ := evt.Payload["name"].(string)
 			text, isErr := resultOutcome(evt)
-			w.transcript.Apply(transcript.ToolResult{CallID: callID, Name: name, Text: text, IsErr: isErr})
+			w.transcript.Apply(ToolResultPatch{CallID: callID, Name: name, Text: text, IsErr: isErr})
 		}
 		// All tool calls resolved
 		if w.toolCallTracker.Resolved() {
@@ -223,7 +222,7 @@ func (w *BaseReasonWorker) handleToolResult(evt event.Event) {
 		name, _ := evt.Payload["name"].(string)
 		if callID != "" && name != "" {
 			if text, _ := resultOutcome(evt); text != "" {
-				w.transcript.Apply(transcript.LateResult{
+				w.transcript.Apply(LateResultPatch{
 					CallID: callID, Name: name, Text: text, Cause: string(parked.ParkCause),
 				})
 			}
@@ -284,7 +283,7 @@ func (w *BaseReasonWorker) recallToolCalls(tcs []*ToolCall) {
 // is idle - no in-flight reasoning and no pending tool calls. Does not
 // interrupt or park anything. This is the least intrusive input mode (level 1).
 func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
-	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.transcript.Apply(InputPatch{Messages: msgs})
 
 	if !w.isReasoning && w.toolCallTracker.Resolved() {
 		w.needReason = true
@@ -296,7 +295,7 @@ func (w *BaseReasonWorker) appendInput(msgs []llm.Message) {
 // here. This is the moderate input mode (level 2) — it does not interrupt
 // an in-flight reasoning call, but ensures the next round responds promptly.
 func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause) {
-	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.transcript.Apply(InputPatch{Messages: msgs})
 	w.immediateReasoningCause = cause
 	w.needReason = true
 }
@@ -306,7 +305,7 @@ func (w *BaseReasonWorker) scheduleInput(msgs []llm.Message, cause PreemptCause)
 // starts. This is the strongest input mode (level 3) — it interrupts the
 // current LLM call so the new input is handled immediately.
 func (w *BaseReasonWorker) interruptInput(msgs []llm.Message, cause PreemptCause) {
-	w.transcript.Apply(transcript.InputEvent{Messages: msgs})
+	w.transcript.Apply(InputPatch{Messages: msgs})
 	w.interruptReason = cause
 	if w.cancelReason != nil {
 		w.cancelReason()
@@ -331,7 +330,7 @@ func (w *BaseReasonWorker) captureTraceID(evt event.Event) {
 func (w *BaseReasonWorker) parkPending(cause PreemptCause) []*ToolCall {
 	tcs := w.toolCallTracker.ParkAll(cause)
 	for _, rc := range tcs {
-		w.transcript.Apply(transcript.ToolParked{
+		w.transcript.Apply(ToolParkedPatch{
 			CallID: rc.CallID,
 			Name:   rc.Name,
 			Cause:  string(cause),

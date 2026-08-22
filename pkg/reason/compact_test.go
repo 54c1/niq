@@ -8,7 +8,6 @@ import (
 
 	"github.com/54c1/niq/core/event"
 	"github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // summarizeProvider routes Complete (summarizer) and CompleteStream (reasoning)
@@ -81,7 +80,7 @@ func TestHardBudgetEmitsMetaRequest(t *testing.T) {
 
 	seed := func(n int) {
 		for i := 0; i < n; i++ {
-			w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+			w.transcript.Apply(InputPatch{Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 			}})
 		}
@@ -114,7 +113,7 @@ func TestMetaCompressViaWorkerUpdate(t *testing.T) {
 		ContextWindow: 1000, KeepTail: 2})
 
 	for i := 0; i < 6; i++ {
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.transcript.Apply(InputPatch{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 		}})
 	}
@@ -152,15 +151,15 @@ func TestMetaRotateViaWorkerUpdate(t *testing.T) {
 	// Seed an episode and the rotating call's own pair, as the transcript
 	// looks right after the LLM emitted the rotate call.
 	for i := 0; i < 4; i++ {
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.transcript.Apply(InputPatch{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: string(rune('a' + i))}}},
 		}})
 	}
-	w.transcript.Apply(transcript.AssistantOutput{Message: llm.Message{
+	w.transcript.Apply(AssistantOutputPatch{Message: llm.Message{
 		Role: llm.RoleAssistant, StopReason: "tool_calls",
 		Content: []llm.ContentBlock{{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"}},
 	}})
-	w.transcript.Apply(transcript.ToolPlaceholders{Calls: []llm.ContentBlock{
+	w.transcript.Apply(ToolPlaceholdersPatch{Calls: []llm.ContentBlock{
 		{Type: llm.ContentToolCall, ToolCallID: "call_ep", ToolName: "context_rotate"},
 	}})
 
@@ -223,12 +222,12 @@ func TestCompactionUpdateMode(t *testing.T) {
 		ContextWindow: 1000, KeepTail: 1})
 
 	// Seed a transcript already headed by a digest (previous compaction).
-	w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+	w.transcript.Apply(InputPatch{Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText,
 			Text: "[context digest] v1: goal=fix bug; done=analysis"}}},
 	}})
 	for i := 0; i < 4; i++ {
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{
+		w.transcript.Apply(InputPatch{Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "step"}}},
 		}})
 	}

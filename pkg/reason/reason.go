@@ -15,7 +15,6 @@ import (
 	"github.com/54c1/niq/core/event"
 	llm "github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 func (w *BaseReasonWorker) reason(ctx context.Context) {
@@ -226,7 +225,7 @@ func (w *BaseReasonWorker) consumeStream(reasonCtx context.Context, stream *llm.
 					blocks = append(blocks, llm.ContentBlock{Type: llm.ContentText, Text: partialText})
 				}
 				w.mu.Lock()
-				w.transcript.Apply(transcript.PartialOutput{Message: llm.Message{
+				w.transcript.Apply(PartialOutputPatch{Message: llm.Message{
 					Role:       llm.RoleAssistant,
 					Content:    blocks,
 					StopReason: "interrupted",
@@ -304,7 +303,9 @@ func (w *BaseReasonWorker) handleStreamStartError(ctx context.Context, reasonCtx
 
 // finishInterrupted broadcasts the interrupted lifecycle for reasoning that
 // was cancelled mid-stream. The partial content is preserved in the
-// transcript. Expects w.mu to be held; unlocks it and calls tryReason before
+//
+//	Expects w.mu to be held; unlocks it and calls tryReason before
+//
 // returning.
 func (w *BaseReasonWorker) finishInterrupted(ctx context.Context, traceID string, out streamOutcome) {
 	cause := w.interruptReason
@@ -334,7 +335,7 @@ func (w *BaseReasonWorker) finishReasoning(ctx context.Context, traceID string, 
 	log.Printf("[reason %s] LLM response: stop_reason=%s, content_blocks=%d",
 		w.ID(), finalMsg.StopReason, len(finalMsg.Content))
 
-	w.transcript.Apply(transcript.AssistantOutput{Message: finalMsg})
+	w.transcript.Apply(AssistantOutputPatch{Message: finalMsg})
 
 	// Budget check: record the round's usage and act on thresholds
 	// (soft: remind, hard: schedule compaction). Expects w.mu held.
@@ -420,9 +421,9 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 			}
 		}
 		if len(others) > 0 {
-			w.transcript.Apply(transcript.ToolPlaceholders{Calls: others})
+			w.transcript.Apply(ToolPlaceholdersPatch{Calls: others})
 			for i := range others {
-				w.transcript.Apply(transcript.ToolResult{
+				w.transcript.Apply(ToolResultPatch{
 					CallID: others[i].ToolCallID,
 					Name:   others[i].ToolName,
 					Text:   "Rejected: a context meta operation is running; issue this call again after it completes.",
@@ -458,7 +459,7 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 		}
 	}
 
-	w.transcript.Apply(transcript.ToolPlaceholders{Calls: busCalls})
+	w.transcript.Apply(ToolPlaceholdersPatch{Calls: busCalls})
 
 	// Group tool calls by target worker, then publish tool.requested
 	// for each group. The bus routes each batch to the correct worker.
@@ -475,7 +476,7 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 		t, ok := w.tools[tc.ToolName]
 		if !ok {
 			log.Printf("[reason %s] unavailable tool: %s - not dispatched", w.ID(), tc.ToolName)
-			w.transcript.Apply(transcript.ToolResult{
+			w.transcript.Apply(ToolResultPatch{
 				CallID: tc.ToolCallID,
 				Name:   tc.ToolName,
 				Text:   "Unknown tool '" + tc.ToolName + "': not dispatched - tool not available.",

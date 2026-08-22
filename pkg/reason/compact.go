@@ -1,5 +1,5 @@
 // Context budget and transcript compaction: the rolling-pressure mechanism for
-// the transcript.
+// the
 //
 // A token ledger records the latest round-trip usage (InputTokens +
 // OutputTokens snapshot, never accumulated) from EventDone.Message.Usage;
@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	llm "github.com/54c1/niq/core/llm"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // handleBudget updates the token ledger from a completed round's final message
@@ -48,7 +47,7 @@ func (w *BaseReasonWorker) handleBudget(ctx context.Context, msg llm.Message) {
 		w.budgetReminded = true
 		log.Printf("[reason %s] context soft budget %.0f%% (%d/%d tokens) - reminding",
 			w.ID(), ratio*100, w.lastUsageTokens, w.contextWindow)
-		w.transcript.Apply(transcript.InputEvent{Messages: []llm.Message{{
+		w.transcript.Apply(InputPatch{Messages: []llm.Message{{
 			Role: llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.ContentText,
 				Text: fmt.Sprintf("[system] Context usage is at %d%% of the model window (%d/%d tokens). "+
@@ -81,7 +80,7 @@ type Compactor interface {
 	// Compact summarizes the older part of t into a digest, keeping what the
 	// implementation decides. The caller already holds w.mu. How much history
 	// to keep (tail) is the implementation's own policy, not a parameter.
-	Compact(ctx context.Context, t transcript.Transcript, directive string) error
+	Compact(ctx context.Context, t Transcript, directive string) error
 }
 
 // DefaultCompactor is the shared LLM-summary implementation of Compactor. It
@@ -106,7 +105,7 @@ open TODOs, and the latest state. Drop: process detail, failed exploration steps
 verbose tool output. Output only the summary, in a compact structured form.`
 
 // Compact implements Compactor: snapshot, summarize (LLM, unlocked), apply.
-func (c *DefaultCompactor) Compact(ctx context.Context, t transcript.Transcript, directive string) error {
+func (c *DefaultCompactor) Compact(ctx context.Context, t Transcript, directive string) error {
 	return c.compact(ctx, t, directive, c.keepTail)
 }
 
@@ -116,7 +115,7 @@ func (c *DefaultCompactor) Compact(ctx context.Context, t transcript.Transcript,
 // result stays visible to the model. Not part of the Compactor interface —
 // called via type assertion by whoever declares the context.rotate tool. The
 // directive (requested carry included) is prepared by the worker.
-func (c *DefaultCompactor) Rotate(ctx context.Context, t transcript.Transcript, directive string) error {
+func (c *DefaultCompactor) Rotate(ctx context.Context, t Transcript, directive string) error {
 	// keepTail=2: the rotating call's own message + placeholder.
 	return c.compact(ctx, t, directive, 2)
 }
@@ -125,7 +124,7 @@ func (c *DefaultCompactor) Rotate(ctx context.Context, t transcript.Transcript, 
 // incremental mode, LLM summarize (no lock held), then apply via CommitEdit.
 // If the summary fails, the edit is aborted and Apply inputs buffered during
 // the window are preserved (merged by a later commit).
-func (c *DefaultCompactor) compact(ctx context.Context, t transcript.Transcript, directive string, keepTail int) error {
+func (c *DefaultCompactor) compact(ctx context.Context, t Transcript, directive string, keepTail int) error {
 	msgs := t.BeginEdit()
 	projection := projectTranscript(msgs)
 	previousDigest := currentDigest(msgs)

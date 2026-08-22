@@ -6,7 +6,6 @@ import (
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/program"
 	reasonBase "github.com/54c1/niq/pkg/reason"
-	"github.com/54c1/niq/pkg/reason/transcript"
 )
 
 // Config holds the configuration for a generic "reason" worker.
@@ -20,7 +19,7 @@ type Config struct {
 
 	// Transcript is the worker's context construction core. nil uses the
 	// default accumulate implementation.
-	Transcript transcript.Transcript
+	Transcript reasonBase.Transcript
 
 	// Context budget (see pkg/reason/compact.go). ContextWindow is the model's
 	// window in tokens; 0 disables budget handling. BudgetSoft/BudgetHard are

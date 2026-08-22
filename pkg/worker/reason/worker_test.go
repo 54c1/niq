@@ -6,7 +6,7 @@ import (
 
 	"github.com/54c1/niq/core/llm"
 	"github.com/54c1/niq/core/worker"
-	"github.com/54c1/niq/pkg/reason/transcript"
+	reasonBase "github.com/54c1/niq/pkg/reason"
 )
 
 // TestNewWorkerDefaults verifies a worker built with a minimal Config gets a
@@ -74,9 +74,9 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		{Role: llm.RoleToolResult, ToolCallID: "call_1", ToolName: "workspace.bash", IsError: false,
 			Content: []llm.ContentBlock{{Type: llm.ContentText, Text: "ok"}}},
 	}
-	tp := transcript.NewAccumulateTranscript()
+	tp := reasonBase.NewAccumulateTranscript()
 	for _, m := range seed {
-		tp.Apply(transcript.AssistantOutput{Message: m})
+		tp.Apply(reasonBase.AssistantOutputPatch{Message: m})
 	}
 	blob0, _ := tp.State()
 	if err := w.Restore(blob0); err != nil {
