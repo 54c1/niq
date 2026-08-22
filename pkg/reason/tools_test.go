@@ -107,9 +107,9 @@ func TestSelfDeclaredToolsLoadable(t *testing.T) {
 	}
 }
 
-// TestDefaultProviderInstallsFourBuiltins verifies the default BuiltinTools
-// provides exactly the four domain-agnostic tools, routed back to this worker.
-func TestDefaultProviderInstallsFourBuiltins(t *testing.T) {
+// TestDefaultProviderExposesFourTools verifies the default provider exposes
+// exactly the four domain-agnostic tools, (self-)discovered by this worker.
+func TestDefaultProviderExposesFourTools(t *testing.T) {
 	w := newTestWorker(nil, newTestChannel())
 	loadSelfTools(t, w)
 
@@ -117,10 +117,10 @@ func TestDefaultProviderInstallsFourBuiltins(t *testing.T) {
 		"context_compress": true, "context_rotate": true}
 	for name := range want {
 		if _, ok := w.tools[name]; !ok {
-			t.Fatalf("expected built-in tool %q, got %+v", name, keys(w.tools))
+			t.Fatalf("expected exposed tool %q, got %+v", name, keys(w.tools))
 		}
 	}
 	if len(w.tools) != len(want) {
-		t.Fatalf("expected exactly %d built-ins, got %+v", len(want), keys(w.tools))
+		t.Fatalf("expected exactly %d exposed tools, got %+v", len(want), keys(w.tools))
 	}
 }

@@ -64,11 +64,11 @@ type Config struct {
 	Provider        llm.LLMProvider
 	ReasoningEffort *string
 
-	// BuiltinTools serves the tools this worker both calls and answers itself
-	// (a tool call routed back to the same worker). nil uses the default set;
-	// a custom provider lists every tool to serve, defaults included. Tools
-	// served by other workers are discovered separately.
-	BuiltinTools ToolProvider
+	// ToolProvider supplies the tools this worker exposes on the bus (a tool
+	// call routed back to the same worker). nil uses the default set; a custom
+	// provider lists every tool to serve, defaults included. Tools served by
+	// other workers are discovered separately.
+	ToolProvider ToolProvider
 
 	// Compactor is how this worker compresses its transcript under window
 	// pressure. nil uses the default LLM-summary compactor. It may also carry
@@ -125,12 +125,12 @@ func NewBaseReasonWorker(cfg Config) *BaseReasonWorker {
 		w.transcript.Apply(InputPatch{Messages: cfg.SeedMessages})
 	}
 
-	// Peer the tool provider (default BuiltinTools if none supplied). Custom
+	// Peer the tool provider (default DefaultTools if none supplied). Custom
 	// providers get a pointer to this worker so they can serve it.
-	if cfg.BuiltinTools == nil {
-		w.toolProvider = NewBuiltinTools(w)
+	if cfg.ToolProvider == nil {
+		w.toolProvider = NewDefaultTools(w)
 	} else {
-		w.toolProvider = cfg.BuiltinTools
+		w.toolProvider = cfg.ToolProvider
 	}
 
 	// Compactor: default LLM-summary compactor unless supplied. It needs the

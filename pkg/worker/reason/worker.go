@@ -35,11 +35,11 @@ type Config struct {
 	// pressure. nil uses the default LLM-summary compactor.
 	Compactor reasonBase.Compactor
 
-	// BuiltinTools serves the tools this worker both calls and answers itself.
-	// nil uses the default set (send_message, list_workers, context.compress,
+	// ToolProvider supplies the tools this worker exposes on the bus. nil uses
+	// the default set (send_message, list_workers, context.compress,
 	// context.rotate). To customize, supply a provider listing every tool you
 	// want, defaults included.
-	BuiltinTools reasonBase.ToolProvider
+	ToolProvider reasonBase.ToolProvider
 
 	// SeedMessages are applied to the transcript at construction: the
 	// spawner's handover brief (goal goes to Programs instead). nil for a
@@ -102,7 +102,7 @@ func NewWorker(cfg Config) *Worker {
 		KeepTail:         cfg.KeepTail,
 		CompactDirective: cfg.CompactDirective,
 		Compactor:        cfg.Compactor,
-		BuiltinTools:     cfg.BuiltinTools,
+		ToolProvider:     cfg.ToolProvider,
 		SeedMessages:     cfg.SeedMessages,
 	})
 

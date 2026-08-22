@@ -1,8 +1,8 @@
 // worker presence tracking and tool aggregation.
 //
 // handleWorkerReady / handleWorkerGone: learn/forget a worker's tools & events
-// allTools: return all known tools (discovered + built-in)
-// handleToolRequest: process tool.requested for built-in tools
+// allTools: return all known tools (discovered + own)
+// handleToolRequest: process tool.requested for this worker's tools
 // toolDefs / sanitize: build LLM tool definitions (dot → underscore names)
 // publishToolRequests: send tool.requested to target workers
 package reason
@@ -27,11 +27,11 @@ func (w *BaseReasonWorker) allTools() []worker.Tool {
 	return tools
 }
 
-// ToolProvider supplies the tools this worker both calls and answers itself
-// (routed back to the same worker): the LLM-facing definitions it can invoke
-// and how calls are served. The embedding worker composes its own; nil uses
-// default BuiltinTools. Tools backed by other workers are discovered
-// separately.
+// ToolProvider supplies the tools this worker exposes on the bus — the
+// LLM-facing definitions it can invoke and how calls are served. This same
+// worker both calls and answers them (a call is routed back to it). The
+// embedding worker composes its own; nil uses the default provider. Tools
+// backed by other workers are discovered separately.
 type ToolProvider interface {
 	// ToolDefinitions returns the tools this provider can handle, as the table
 	// the LLM sees (send_message, list_workers, context.compress, ...).
@@ -40,9 +40,11 @@ type ToolProvider interface {
 	HandleToolCall(tc worker.ToolCall)
 }
 
-// BuiltinTools is the default provider: the four domain-agnostic tools any
-// reason-family worker gets. It holds the worker pointer it serves on.
-type BuiltinTools struct {
+// DefaultTools is the default ToolProvider: the four domain-agnostic
+// capabilities any reason worker exposes on the bus. They are declared with
+// this worker as provider, so only this worker can call them, but they are
+// ordinary bus-declared abilities, not a special built-in set.
+type DefaultTools struct {
 	w *BaseReasonWorker
 }
 
@@ -60,8 +62,8 @@ func metaOpOf(toolName string) string {
 	}
 }
 
-// builtinDefinitions are the schemas of the four default tools.
-var builtinDefinitions = []worker.Tool{
+// defaultToolDefinitions are the schemas of the four default tools.
+var defaultToolDefinitions = []worker.Tool{
 	{
 		Name:        "send_message",
 		Description: "Send a message to a specific worker on the bus.",
@@ -127,16 +129,16 @@ func (w *BaseReasonWorker) selfToolDeclarations() []map[string]any {
 	return out
 }
 
-// NewBuiltinTools builds the default provider bound to a worker.
-func NewBuiltinTools(w *BaseReasonWorker) *BuiltinTools {
-	return &BuiltinTools{w: w}
+// NewDefaultTools builds the default provider bound to a worker.
+func NewDefaultTools(w *BaseReasonWorker) *DefaultTools {
+	return &DefaultTools{w: w}
 }
 
 // ToolDefinitions implements ToolProvider for the four default tools, tagged
 // with this worker's ID so they route back to it.
-func (t *BuiltinTools) ToolDefinitions() []worker.Tool {
-	out := make([]worker.Tool, len(builtinDefinitions))
-	for i, td := range builtinDefinitions {
+func (t *DefaultTools) ToolDefinitions() []worker.Tool {
+	out := make([]worker.Tool, len(defaultToolDefinitions))
+	for i, td := range defaultToolDefinitions {
 		td.Provider = t.w.ID()
 		out[i] = td
 	}
@@ -147,7 +149,7 @@ func (t *BuiltinTools) ToolDefinitions() []worker.Tool {
 // compress/rotate are meta operations: they edit this worker's own state and
 // are reached via worker.update (from the LLM's tool call converted by
 // handleToolCalls, or from external requesters), not via tool.requested.
-func (t *BuiltinTools) HandleToolCall(tc worker.ToolCall) {
+func (t *DefaultTools) HandleToolCall(tc worker.ToolCall) {
 	switch tc.Name {
 	case "send_message":
 		t.w.handleSendMessage(tc.CallID, tc.Name, tc.CallerID, tc.Args)
@@ -237,8 +239,8 @@ func (w *BaseReasonWorker) timeoutToolFor(name string) (worker.Tool, bool) {
 }
 
 // bareToolName reverses tool encoding to the bare name. For an external tool
-// (provider__name) it strips the prefix; built-ins (no provider prefix) return
-// name unchanged.
+// (provider__name) it strips the prefix; a worker's own tools (no provider
+// prefix) return name unchanged.
 func bareToolName(t worker.Tool) string {
 	if t.Provider == "" {
 		return t.Name
@@ -370,8 +372,8 @@ func toolDefs(w *BaseReasonWorker, tools []worker.Tool) []llm.ToolDef {
 }
 
 // encodeToolName maps a Tool to the name both the w.tools table and the LLM
-// use. Built-ins (provider == this worker, or empty) keep a bare name (with
-// inner '.' -> '_'); tools backed by another worker become provider__name, so
+// use. A worker's own tools (provider empty or this worker) keep a bare name
+// (with inner '.' -> '_'); tools backed by another worker become provider__name, so
 // the worker/tool boundary is unambiguous. Invariant: worker IDs and tool
 // names must not contain "__" (double underscore); '__' is the separator.
 func encodeToolName(w *BaseReasonWorker, t worker.Tool) string {
