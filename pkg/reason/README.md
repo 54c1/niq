@@ -1,7 +1,7 @@
 # reason — the domain-agnostic reasoning base
 
 `reason` is niq's domain-agnostic reasoning mechanism, shared by every
-reason-family worker (the generic reason worker today, a coding worker later).
+reason-family worker (e.g. the generic reason worker).
 It consumes events from the bus, calls the LLM, and publishes outcomes as
 events. An embedding worker composes its own subscriptions, tools, event
 conversion and goals (programs) onto `BaseReasonWorker`.
@@ -34,14 +34,15 @@ Division between watch and process:
 | File | Responsibility |
 |---|---|
 | `worker.go` | `BaseReasonWorker` — the generic reasoning body (embeds `worker.BaseWorker`) + `Config` + `NewBaseReasonWorker` + lifecycle (`Start`/`Stop`/`Snapshot`/`Restore`/`Messages`) + `broadcastReady` |
-| `reason.go` | the reasoning round: prepareReasoning / consumeStream / finishReasoning + lifecycle broadcasts (reason.start/end/response/thinking) + tool dispatch handleToolCalls + ErrorContextLength compaction retry |
+| `reason.go` | the reasoning round: prepareReasoning / consumeStream / finishReasoning + lifecycle broadcasts (reason.start/end/response/thinking) + tool dispatch handleToolCalls + meta-tool routing + ErrorContextLength handling (meta update request) |
 | `watch.go` | the event loop `watch` + the `tryReason` decision gate |
 | `process.go` | event dispatch `process` + handlers (abort/timeout/reminder/tool-result/input) + event→transcript-input translation |
 | `tools.go` | tools: the `ToolProvider` interface + default `BuiltinTools` + tool-name encoding + worker.ready tool discovery |
-| `compact.go` | context budget + transcript compaction: token ledger (Usage snapshot), soft/hard thresholds (remind/direct compact), compaction orchestration (project→summarize→apply), incremental merge, projection (strips image/thinking, truncates) |
+| `compact.go` | context budget + transcript compaction: token ledger (Usage snapshot), soft/hard thresholds (remind/direct compact), compaction orchestration (BeginEdit→summarize→CommitEdit), incremental merge, projection (strips image/thinking, truncates) |
 | `systemprompt.go` | renders the system prompt from programs |
 | `tooltracker.go` | `ToolCallTracker` state machine (tracks Pending/Parked), map only |
-| `transcript/` | the transcript subpackage: `Transcript` interface + sealed input variants + the tool-pairing invariant base + the default accumulate implementation |
+| `transcript.go` | the `Transcript` interface + sealed `TranscriptPatch` variants (the context-construction algebra) + the tool-pairing invariant base |
+| `transcript_accumulate.go` | `AccumulateTranscript`, the default accumulate implementation — self-synchronized, with meta-edit buffering |
 
 ## Core ideas
 
@@ -50,10 +51,17 @@ Division between watch and process:
 The only cross-round state of a reason node is the transcript — workers (single
 reasoning rounds) take turns at the workbench, each reading the notes the
 previous one left, reasoning, and writing back. The transcript is not the
-worker's core state; it is a projection of facts plus working memory,
-held in `transcript/`. Render is an identity projection of the transcript;
-the `[system]` prompt comes from the worker's programs (`systemprompt.go`),
-not the transcript.
+worker's core state; it is a projection of facts plus working memory, held in a
+`Transcript` (transcript.go). Render is an identity projection of the
+transcript; the `[system]` prompt comes from the worker's programs
+(`systemprompt.go`), not the transcript.
+
+The transcript is self-synchronized: it carries its own lock and an editing
+state (`BeginEdit`/`CommitEdit`/`AbortEdit`). An edit that must rewrite it
+over a long, off-transcript computation (an LLM summary) begins by taking a
+snapshot, computes without holding any lock, then commits; concurrent external
+inputs are buffered and merged on commit, so the event loop never blocks and
+inputs are never lost or torn.
 
 ### Event dispatch
 
@@ -76,7 +84,8 @@ Other events are dispatched by `process`:
 | timer.reminder | treat as input (schedule level) | yes |
 | worker.ready/gone | learn/forget the worker's tools | no |
 | tool.completed/failed/rejected | resolve or park-late + update transcript | when resolved |
-| tool.requested | route built-in tools (via ToolProvider) | no |
+| tool.requested | route tool calls to the owning `ToolProvider` | no |
+| worker.update | run a meta operation (compress/rotate the transcript) asynchronously | when done |
 | worker.input | handle per the three input_mode levels | depends on level |
 
 ### Tools and ToolProvider
@@ -87,12 +96,37 @@ routed back to the same worker. Tools come from a `ToolProvider`:
 call is served). The default `BuiltinTools` provides four: `send_message`,
 `list_workers`, `context.compress`, `context.rotate`. An embedding worker can
 supply its own provider via `Config.BuiltinTools` (embed `BuiltinTools` to keep
-the defaults and add its own). Tools backed by other workers are discovered
-separately from `worker.ready`, and are not built-ins.
+the defaults and add its own); a custom provider lists every tool it serves.
+
+Every tool a worker serves — its own built-ins and other workers' tools alike —
+is discovered from `worker.ready` announcements on the bus. On Start, reason
+publishes a self-directed `worker.ready` whose `tools` payload is generated by
+its provider's `ToolDefinitions()`; the discovering worker (itself) loads them
+into the tool table exactly as it loads any other worker's.
 
 Tool names are encoded unambiguously: built-ins keep a bare name (inner `.`
 → `_`); external-worker tools become `provider__name`. `__` is the separator;
 worker IDs and tool names must not contain `__`.
+
+A meta tool (context.compress / context.rotate) is a direct edit of this
+worker's own state, so when the LLM calls one it is routed to a `worker.update`
+event sent to itself — not to a regular `tool.requested`/`ToolProvider` call.
+This keeps the worker's self-editing operations on the same auditable bus path
+as every other update, and is how the compaction section below is driven.
+
+Declaration and execution are layered:
+
+- **Declaration** — `worker.ready` carries the tools this worker serves, each
+  flagged `is_meta_tool` if it edits this worker's own state. This decides
+  *which* tools are meta, nothing more.
+- **Execution** — a meta tool never rides `tool.requested`; calling one is
+  rerouted by `handleToolCalls` into a `worker.update` event sent to self
+  (`worker.update{op:compress}` etc.). So every meta action — including the
+  system-side compaction triggers (hard budget, `ErrorContextLength`) — funnels
+  through the same auditable `worker.update` path.
+- **Guard** — a stray `tool.requested` for a meta tool is rejected by
+  `BuiltinTools.HandleToolCall`, so compression cannot be dispatched as an
+  ordinary tool call.
 
 ### Tool-call lifecycle (placeholders)
 
@@ -102,8 +136,8 @@ calls it immediately inserts `tool_result(pending)` placeholders; a result
 replaces it in place, parking replaces it in place with an explanation, and a
 late result is appended as a user message (a second tool_result for the same
 call_id would violate the pairing invariant). This pairing invariant lives in
-the `transcript/` subpackage; the worker translates its lifecycle into sealed
-BuilderInput variants handed to the transcript.
+the transcript (transcript.go); the worker translates its lifecycle into sealed
+`TranscriptPatch` variants handed to the transcript.
 
 `ToolCallTracker` (tooltracker.go) records only calls still being awaited:
 - **Pending** — active, the reasoner is still waiting.
@@ -116,20 +150,32 @@ After each streamed round the worker records usage from `Usage` (latest
 Input+Output snapshot, never accumulated) and compares it against
 `ContextWindow`:
 
-- ≥ soft line (0.85) → inject a reminder; the LLM calls `context.compress`.
-- ≥ hard line (0.97) → the system compacts directly (no LLM input).
-- opening the stream hits `ErrorContextLength` → compact once, then retry.
+All three triggers funnel into one auditable path: each issues a `worker.update`
+meta request to itself (a meta operation on this worker's own state), so
+compaction is always reachable through the same bus event — never a bespoke
+side channel.
 
-Compaction = summarize (the projected transcript) → `transcript.Compact(digest,
-keepTail)`. The summarizer prompt is overridable via `compact_directive`
-(program/config); a built-in fallback exists, and when a digest is already
-present the merge is incremental (early goals/constraints survive). Projection
-comes first: strips image/thinking, truncates oversized tool results; the cut
-point aligns to pairing boundaries. `context.rotate` is `Compact` with
-keepTail=2 (turn the page, keeping this call's placeholder so the result stays
-visible); the fresh episode starts from the digest. Compaction runs outside the
-lock (snapshot → summarize → apply); keepTail is re-evaluated at apply time so
-concurrent appends survive; single-flight (`isCompacting`) prevents doubles.
+- ≥ soft line (0.85) → the system injects a reminder; the LLM decides and calls
+  `context.compress`, which is rerouted to a `worker.update{op:compress}`.
+- ≥ hard line (0.97) → the system triggers compaction itself
+  (`worker.update{op:compress}`), without waiting for the LLM.
+- opening the stream hits `ErrorContextLength` → the round ends (a non-retriable
+  error: retrying cannot shrink an over-length context); a
+  `worker.update{op:compress}` request is issued, compaction completes
+  asynchronously, and the next round starts on the shrunk context.
+
+Compaction = snapshot via `BeginEdit` → summarize the projected transcript →
+`CommitEdit(digest, keepTail)`. The summarizer prompt is overridable via
+`compact_directive` (program/config); a built-in fallback exists, and when a
+digest is already present the merge is incremental (early goals/constraints
+survive). Projection comes first: strips image/thinking, truncates oversized
+tool results; the cut point aligns to pairing boundaries. Because the
+transcript is self-synchronized, compaction runs on its own goroutine: the
+summary is computed without holding any lock, and inputs arriving meanwhile are
+buffered and merged on commit, so the event loop never blocks.
+`context.rotate` is `Compact` with keepTail=2 (turn the page, keeping this
+call's placeholder so the result stays visible); the fresh episode starts from
+the digest.
 
 ### Tool-call timeout
 
@@ -157,8 +203,10 @@ surfaced to the LLM as a late-result message carrying its cause.
    reasoning.
 4. **reason does not recurse.** One result per reasoning; chaining happens
    through tryReason re-entry (isReasoning guarantees at most one round).
-5. **Concurrency is lock + snapshot.** All shared fields are read/written under
-   `w.mu`; transcripts are passive, the caller holds the lock.
+5. **Concurrency is lock + snapshot; the transcript is self-synchronized.**
+   Shared worker fields are read/written under `w.mu`; the transcript carries
+   its own lock and a meta-edit state, so a long summary holds no worker lock
+   and never blocks the event loop.
 6. **No internal queue.** process consumes at microsecond level; the bus
    channel drains in real time.
 7. **Focus on one worker's attention.** Transcript = workbench notes; tools =

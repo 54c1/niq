@@ -1,8 +1,8 @@
 // AccumulateTranscript: the default transcript implementation. A flat
 // transcript of llm.Messages; digest messages may appear among them after a
 // CommitEdit. Concurrency-safe on its own: each method locks internally, and
-// meta edits (BeginEdit..CommitEdit) run their computation without holding
-// the lock while buffering concurrent external inputs.
+// edits (BeginEdit..CommitEdit) run their computation without holding the lock
+// while buffering concurrent external inputs.
 package reason
 
 import (
@@ -26,24 +26,24 @@ func digestMessage(digest string) llm.Message {
 	}
 }
 
-// AccumulateTranscript owns the working  It is concurrency-safe on
-// its own: every method locks internally, and meta edits (BeginEdit..CommitEdit)
-// run their computation without holding the lock while buffering concurrent
-// Apply calls.
+// AccumulateTranscript holds the working transcript messages. It is
+// concurrency-safe on its own: every method locks internally, and edits
+// (BeginEdit..CommitEdit) run their computation without holding the lock while
+// buffering concurrent Apply calls.
 type AccumulateTranscript struct {
 	mu sync.Mutex
 
 	messages     []llm.Message
-	editing      bool          // a meta edit is in progress
+	editing      bool          // an edit is in progress
 	pendingInput []llm.Message // Apply inputs buffered during the edit
 }
 
-// NewAccumulateTranscript creates an empty
+// NewAccumulateTranscript creates an empty transcript.
 func NewAccumulateTranscript() *AccumulateTranscript {
 	return &AccumulateTranscript{}
 }
 
-// Apply folds one lifecycle fact into the  If an edit is in
+// Apply folds one lifecycle fact into the transcript. If an edit is in
 // progress, the input is buffered (merged on CommitEdit), so it is neither
 // lost nor torn by the edit's overwrite.
 func (b *AccumulateTranscript) Apply(input TranscriptPatch) {
@@ -54,8 +54,8 @@ func (b *AccumulateTranscript) Apply(input TranscriptPatch) {
 
 func (b *AccumulateTranscript) applyLocked(input TranscriptPatch) {
 	if b.editing {
-		// During a meta edit, only external inputs and late results may still
-		// arrive (the current round has ended; its tool calls were rejected).
+		// During an edit, only external inputs and late results may still arrive
+		// (the current round has ended; its tool calls were rejected).
 		// Both are append-only additions that should survive the edit's
 		// overwrite, so they are buffered and merged on commit. Any other
 		// variant is a stale worker-lifecycle action and is dropped.
@@ -105,7 +105,7 @@ func (b *AccumulateTranscript) Render() []llm.Message {
 	return b.messages
 }
 
-// BeginEdit starts a meta edit: marks the transcript as editing and returns a
+// BeginEdit starts an edit: marks the transcript as editing and returns a
 // snapshot. The lock is released before returning, so the caller can compute
 // off-transcript (e.g. an LLM summary); Apply calls during the edit are
 // buffered.
@@ -116,7 +116,7 @@ func (b *AccumulateTranscript) BeginEdit() []llm.Message {
 	return b.messages
 }
 
-// CommitEdit applies a meta edit: replaces all but the last keepTail messages
+// CommitEdit applies an edit: replaces all but the last keepTail messages
 // with a digest (alignment-corrected), then merges the Apply inputs buffered
 // during the edit. No-op if no edit is in progress.
 func (b *AccumulateTranscript) CommitEdit(digest string, keepTail int) {
@@ -138,7 +138,7 @@ func (b *AccumulateTranscript) CommitEdit(digest string, keepTail int) {
 	}
 }
 
-// AbortEdit cancels a meta edit without applying it: clears the editing state
+// AbortEdit cancels an edit without applying it: clears the editing state
 // and leaves buffered inputs unmerged (the main transcript stays as it was;
 // buffered inputs are preserved here so a later commit does not lose them, and
 // they are appended by the next successful commit). No-op if no edit is in

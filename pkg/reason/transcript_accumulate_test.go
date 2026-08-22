@@ -210,11 +210,11 @@ func TestEditBuffersApply(t *testing.T) {
 	b.Apply(InputPatch{Messages: []llm.Message{userMsg("a")}})
 	b.Apply(InputPatch{Messages: []llm.Message{userMsg("b")}})
 
-	// Begin an edit; the snapshot is the pre-edit
+	// Begin an edit; the snapshot is the pre-edit messages.
 	b.BeginEdit()
 
 	// While editing, an external input arrives: it must be buffered, not
-	// appended to the visible
+	// appended to the visible transcript.
 	b.Apply(InputPatch{Messages: []llm.Message{userMsg("during-edit")}})
 
 	// Commit: digest replaces all but the tail, then the buffered input is

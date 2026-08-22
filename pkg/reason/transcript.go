@@ -1,6 +1,7 @@
-// Package transcript holds the reason worker's context construction core: the
-// working "notes" a reasoning worker keeps. See
-// pkg/reason for the reasoning loop that owns a Transcript.
+// Transcript and the sealed TranscriptPatch algebra: the context-construction
+// contract a reasoning worker folds into. The godoc for the package lives in
+// worker.go; this file is the transcript's interface plus the inputs that fold
+// into it, and the tool-pairing invariant that constrains them.
 package reason
 
 import "github.com/54c1/niq/core/llm"
@@ -9,12 +10,11 @@ import "github.com/54c1/niq/core/llm"
 // data structure that folds lifecycle facts (TranscriptPatch) into a working
 // transcript and renders it into LLM messages per reasoning round.
 //
-// It is concurrency-safe by itself: a meta operation that must edit the
-// transcript over a long, off-transcript computation (an LLM summary) can
-// BeginEdit (snapshot), compute freely without holding any lock, then
-// CommitEdit to apply. While an edit is in progress, Apply calls are buffered
-// and merged on commit, so they are neither lost nor torn by the edit's
-// overwrite.
+// It is concurrency-safe by itself: an edit that must rewrite the transcript
+// over a long, off-transcript computation (an LLM summary) can BeginEdit
+// (snapshot), compute freely without holding any lock, then CommitEdit to
+// apply. While an edit is in progress, Apply calls are buffered and merged on
+// commit, so they are neither lost nor torn by the edit's overwrite.
 //
 // Design invariants:
 //   - Each method acquires and releases its lock internally; methods never
@@ -32,7 +32,7 @@ import "github.com/54c1/niq/core/llm"
 //
 // The interface is evolving: a single implementation (Accumulate) for now.
 type Transcript interface {
-	// Apply folds one lifecycle fact into the  If an edit is in
+	// Apply folds one lifecycle fact into the transcript. If an edit is in
 	// progress (BeginEdit..CommitEdit), the input is buffered and merged on
 	// commit, not lost.
 	Apply(input TranscriptPatch)
@@ -41,18 +41,18 @@ type Transcript interface {
 	// slice must be treated as read-only.
 	Render() []llm.Message
 
-	// BeginEdit starts a meta edit: marks the transcript as being edited and
-	// returns a snapshot. The lock is released before returning, so the caller
+	// BeginEdit starts an edit: marks the transcript as being edited and returns
+	// a snapshot. The lock is released before returning, so the caller
 	// may compute on the snapshot (e.g. an LLM summary) without holding any
 	// lock; Apply calls during this window are buffered.
 	BeginEdit() []llm.Message
 
-	// CommitEdit ends a meta edit: applies the computed digest (replacing all
+	// CommitEdit ends an edit: applies the computed digest (replacing all
 	// but the last keepTail messages, alignment-corrected) and merges any
 	// Apply inputs buffered during the edit. No-op if no edit is in progress.
 	CommitEdit(digest string, keepTail int)
 
-	// AbortEdit cancels a meta edit without applying: clears the editing state
+	// AbortEdit cancels an edit without applying: clears the editing state
 	// and drops nothing (buffered Apply inputs are kept in the main transcript;
 	// if the edit was going to overwrite them, aborting returns it to normal
 	// append-only). No-op if no edit is in progress.
