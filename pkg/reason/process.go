@@ -64,10 +64,11 @@ func (w *BaseReasonWorker) process(_ context.Context, evt event.Event) {
 	}
 }
 
-// emitMetaRequest sends a worker.update event to this worker, routing a meta
-// operation (compress/rotate/...) through the bus for audit, like any other
-// meta trigger. Lock need not be held specially; the event is queued to self.
-func (w *BaseReasonWorker) emitMetaRequest(ctx context.Context, op string, args map[string]any) {
+// emitMetaUpdateRequest sends a worker.update event to this worker, requesting
+// a meta operation (compress/rotate/...) through the bus for audit — the single
+// path every meta trigger converges on. Lock need not be held specially; the
+// event is queued to self and handled asynchronously by process.
+func (w *BaseReasonWorker) emitMetaUpdateRequest(ctx context.Context, op string, args map[string]any) {
 	if args == nil {
 		args = map[string]any{}
 	}

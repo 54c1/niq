@@ -110,19 +110,13 @@ func (w *BaseReasonWorker) openStream(reasonCtx context.Context, req *llm.Comple
 			return true, callErr
 		}
 		if llmErr.Type == llm.ErrorContextLength {
-			// Over the hard limit the provider rejected the request: compact
-			// synchronously (our own lock discipline), then retry with the
+			// The context is over the hard limit: retrying cannot help. Ask to
+			// compress via a meta update request (single auditable path), and
+			// return a non-retriable error so this round ends; the compaction
+			// completes asynchronously and schedules the next round on the
 			// shrunk context.
-			w.mu.Lock()
-			cerr := w.compactor.Compact(reasonCtx, w.transcript, w.compactDirective())
-			w.mu.Unlock()
-			if cerr == nil {
-				req.Context.Messages = w.renderTranscriptLocked()
-				// Return the original error so retry keeps looping (retry
-				// treats a nil error as success); the next attempt uses the
-				// compacted context.
-				return true, callErr
-			}
+			w.emitMetaUpdateRequest(reasonCtx, "compress", nil)
+			return false, callErr
 		}
 		// Retry everything except authentication: rate limits, timeouts,
 		// provider-side blips and other transient LLM errors all deserve a few
@@ -438,7 +432,7 @@ func (w *BaseReasonWorker) handleToolCalls(ctx context.Context, toolCalls []llm.
 		if metaCall.ToolArguments != "" {
 			json.Unmarshal([]byte(metaCall.ToolArguments), &argsMap)
 		}
-		w.emitMetaRequest(ctx, metaOpOf(metaTool.Name), argsMap)
+		w.emitMetaUpdateRequest(ctx, metaOpOf(metaTool.Name), argsMap)
 
 		w.isReasoning = false
 		w.mu.Unlock()
